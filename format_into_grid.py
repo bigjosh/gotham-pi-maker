@@ -24,7 +24,7 @@ TOTAL_DIGITS = (BLOCK_SIZE_X*BLOCK_SIZE_Y) *(BLOCK_COUNT_X*BLOCK_COUNT_Y)
 # Assertion to ensure we always have exactly 1 billion digits
 assert TOTAL_DIGITS == 1_000_000_000, f"Grid must contain exactly 1 billion digits, but has {TOTAL_DIGITS}"
 
-BLOCK_H_PADDING = "   "
+BLOCK_H_PADDING = "  "
 BLOCK_V_PADDING = "\n"
 
 # here is the bitmap 3x5 (4x6 including padding) for the digits 0-9
@@ -62,7 +62,7 @@ def process_file(filename, max_rows=None):
                     row_number += 1
 
                     if max_rows and row_number >= max_rows:
-                        break
+                        return
                 
                 print(BLOCK_V_PADDING, end='')
 
@@ -81,6 +81,7 @@ def process_file(filename, max_rows=None):
 
 def main():
     """Main function to handle command line arguments and run the file reader."""
+
     if len(sys.argv) < 2 or len(sys.argv) > 3:
         print("Usage: python file_reader.py <filename> [max_rows]")
         print("Optional max_rows parameter limits the number of rows processed (for testing).")
