@@ -172,6 +172,7 @@ def stream_text_to_cells(
     advance_x: float,
     advance_y: float,
     newline_advance: Optional[float],
+    rows_limit: Optional[int],
 ) -> gdstk.Cell:
     """Create top-level cell containing references for streamed text.
 
@@ -186,18 +187,24 @@ def stream_text_to_cells(
     # Read stream in buffered chunks
     bufsize = 1 << 20  # 1 MiB
     row=0
+    cell_count=0
     with open(text_path, "r", encoding="utf-8", newline="") as fin:
         while True:
             chunk = fin.read(bufsize)
             if not chunk:
                 break
             for ch in chunk:
+                if ch == '\r':
+                    continue
+
                 if ch == '\n':
                     # newline
                     x = 0.0
                     y -= (newline_advance if newline_advance is not None else advance_y)
                     row += 1
-                    print("row=", row)
+                    print(f"row={row:,} glyph_count={cell_count:,}")
+                    if rows_limit is not None and row >= rows_limit:
+                        return top
 
                 else:
 
@@ -206,12 +213,16 @@ def stream_text_to_cells(
                     if (ch != " "):
 
                         cell = glyph_cells.get(ch)
-                        ref = gdstk.Reference(cell, origin=(x, y))
 
                         if cell is None:
                             raise ValueError(f"Missing glyph for character: {ch!r}")
 
+
+                        ref = gdstk.Reference(cell, origin=(x, y))
+
                         top.add(ref)
+
+                        cell_count += 1
 
                     x += advance_x
 
@@ -232,6 +243,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--layer", type=int, default=1, help="GDS layer for glyph polygons")
     p.add_argument("--datatype", type=int, default=0, help="GDS datatype for glyph polygons")
     p.add_argument("--line-advance", type=float, default=None, help="Vertical advance per newline (defaults to glyph height)")
+    p.add_argument("--rows", type=int, default=None, help="Maximum number of rows (lines) to process")
 
     p.add_argument("--top-cell", default="TEXT", help="Name of the top-level cell")
     p.add_argument("--unit", type=float, default=1e-6, help="Library unit (e.g., micron)")
@@ -261,6 +273,7 @@ def main() -> None:
         advance_x=adv_x,
         advance_y=adv_y,
         newline_advance=args.line_advance,
+        rows_limit=args.rows,
     )
 
     lib.write_gds(args.out)
