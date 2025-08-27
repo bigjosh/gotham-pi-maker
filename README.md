@@ -15,14 +15,14 @@ Code to make the billion digits of Pi mask
     ```
 6. Finally we turn the grid of digits into a gds. This can take a long time, so we can test with just the first 1500 rows using
     ```
-    python .\text_to_gds.py --font .\font4x6.txt --text .\pi-billion-p-grid.txt --out .\pi-billion-p-grid.gds --rows 1500
+    text_to_gds.py --font .\font4x6.txt --text .\pi-billion-p-grid.txt --out .\pi-billion-p-grid.gds --rows 1500
     ```
 
     We can then check to make sure it looks OK with KLayout.
 
-    To run the final GDS file, we use this command which will condense every 5 digit sequence of digits into a single cell... 
+    To run the final GDS file, we use this command which will condense every 5 digit sequence of digits into a single cell for a smaller file size... 
     ```
-    python .\text_to_gds.py --font .\font4x6.txt --text .\pi-billion-p-grid.txt --out .\pi-billion-p-grid.gds --matchlen 5
+    text_to_gds.py --font .\font4x6.txt --text .\pi-billion-p-grid.txt --out .\pi-billion-p-grid.gds --matchlen 5
     ```
 
    
