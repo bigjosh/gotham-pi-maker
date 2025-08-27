@@ -30,7 +30,7 @@ import argparse
 import io
 import os
 import re
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Iterable
 
 import gdstk
 
@@ -39,6 +39,9 @@ import gdstk
 # ----------------------------
 # Font parsing and cell build
 # ----------------------------
+
+# Prefix used for composed multi-glyph (digit string) cells
+MULTIGLYPH_PREFIX = "GLY_STR_"
 
 def _parse_glyph_key(line: str) -> str:
     """Parse a glyph identifier line.
@@ -109,11 +112,19 @@ def load_font_build_cells(
         advance_x = w_px * step_x
         advance_y = h_px * step_y
 
+        # Build a single pixel cell to be referenced by all glyphs
+        pixel_cell_name = f"{cell_prefix}PIX"
+        pixel_cell = lib.new_cell(pixel_cell_name)
+        pixel_rect = gdstk.rectangle(
+            (0.0, 0.0), (pixel_size, pixel_size), layer=layer, datatype=datatype
+        )
+        pixel_cell.add(pixel_rect)
+
         line_iter = iter(f)
         for line in line_iter:
             line = line.rstrip("\n")
-            if not line.strip():
-                continue  # skip blank lines
+            if not line.strip() or line.startswith("#"):
+                continue  # skip blank and comment lines
 
             # Parse glyph identifier line
             ch = _parse_glyph_key(line)
@@ -138,26 +149,66 @@ def load_font_build_cells(
             safe_name = f"{cell_prefix}{ord(ch):02X}"
             cell = lib.new_cell(safe_name)
 
-            # Create rectangles for ON pixels
-            polys = []
+            # Create references to the single pixel cell for ON pixels
+            refs = []
             for y in range(h_px):
                 row = rows[y]
                 for x in range(w_px):
                     if row[x] == 'X':
                         x0 = x * step_x
                         y0 = (h_px - 1 - y) * step_y  # origin at bottom-left
-                        rect = gdstk.rectangle(
-                            (x0, y0), (x0 + pixel_size, y0 + pixel_size),
-                            layer=layer, datatype=datatype
-                        )
-                        polys.append(rect)
+                        ref = gdstk.Reference(pixel_cell, origin=(x0, y0))
+                        refs.append(ref)
 
-            if polys:
-                cell.add(*polys)
+            if refs:
+                cell.add(*refs)
 
             glyph_cells[ch] = cell
 
     return glyph_cells, (w_px, h_px), advance_x, advance_y
+
+
+# pass in a string of glyphs and it will create a new cell that has all of the glyphs referenced in it
+
+def build_multiglyph_cell(
+    s: str,
+    lib: gdstk.Library,
+    glyph_cells: Dict[str, gdstk.Cell],
+    advance_x: float,
+) -> gdstk.Cell:
+    """Build a cell that references glyph cells for a string of digits.
+
+    Raises ValueError if the string contains non-digit characters or a glyph is missing.
+    """
+    name = f"{MULTIGLYPH_PREFIX}{s}"
+    cell = lib.new_cell(name)
+
+    x = 0.0
+    for ch in s:
+        glyph = glyph_cells.get(ch)
+        if glyph is None:
+            raise ValueError(f"Missing glyph for character: {ch!r}")
+        ref = gdstk.Reference(glyph, origin=(x, 0.0))
+        cell.add(ref)
+        x += advance_x
+
+    return cell
+
+# pass in a string of glyphs and it will look for the a matching string in the dictionary and return the cell
+# if it doesn't find it, it will create a new cell and add it to the dictionary
+
+def get_multiglyph_cell(
+    s: str,
+    lib: gdstk.Library,
+    glyph_cells: Dict[str, gdstk.Cell],
+    advance_x: float,
+) -> gdstk.Cell:
+    name = f"{MULTIGLYPH_PREFIX}{s}"
+    cell = glyph_cells.get(name)
+    if cell is None:
+        cell = build_multiglyph_cell(s, lib, glyph_cells, advance_x)
+        glyph_cells[name] = cell
+    return cell
 
 
 # ----------------------------
@@ -171,8 +222,8 @@ def stream_text_to_cells(
     top_cell_name: str,
     advance_x: float,
     advance_y: float,
-    newline_advance: Optional[float],
     rows_limit: Optional[int],
+    matchlen: int,
 ) -> gdstk.Cell:
     """Create top-level cell containing references for streamed text.
 
@@ -188,43 +239,71 @@ def stream_text_to_cells(
     bufsize = 1 << 20  # 1 MiB
     row=0
     cell_count=0
+    digit_count=0
+    if matchlen < 1:
+        raise ValueError("matchlen must be >= 1")
+
+    pending = ""  # accumulate non-space run for multiglyph placement
+
     with open(text_path, "r", encoding="utf-8", newline="") as fin:
         while True:
             chunk = fin.read(bufsize)
+
+            def emit_pending() -> None:
+                """Emit pending run: first as matchlen chunks (if >1), then remaining singles."""
+                nonlocal pending, x, cell_count
+
+                while matchlen > 1 and len(pending) >= matchlen:
+                    seg = pending[:matchlen]
+                    pending = pending[matchlen:]
+                    cell = get_multiglyph_cell(seg, lib, glyph_cells, advance_x)
+                    top.add(gdstk.Reference(cell, origin=(x, y)))
+                    cell_count += 1
+                    x += matchlen * advance_x
+                
+                while len(pending) > 0:
+                    ch2 = pending[0]
+                    pending = pending[1:]
+                    cell = glyph_cells.get(ch2)
+                    if cell is None:
+                        raise ValueError(f"Missing glyph for character: {ch2!r}")
+                    top.add(gdstk.Reference(cell, origin=(x, y)))
+                    cell_count += 1
+                    x += advance_x
+
             if not chunk:
+                # EOF: flush any remaining pending run
+                emit_pending()
                 break
+            
             for ch in chunk:
                 if ch == '\r':
                     continue
 
                 if ch == '\n':
+                    # emit pending run before newline
+                    emit_pending()
+
                     # newline
                     x = 0.0
-                    y -= (newline_advance if newline_advance is not None else advance_y)
+                    y -= advance_y
                     row += 1
-                    print(f"row={row:,} glyph_count={cell_count:,}")
+                    print(f"row={row:,} glyph_count={cell_count:,} digit_count={digit_count:,} defined cells={len(glyph_cells)} compression={ 1.0 - (cell_count/digit_count):.2f}")
                     if rows_limit is not None and row >= rows_limit:
                         return top
 
                 else:
 
                     # no need to put anything in output for whitespace
-
-                    if (ch != " "):
-
-                        cell = glyph_cells.get(ch)
-
-                        if cell is None:
-                            raise ValueError(f"Missing glyph for character: {ch!r}")
-
-
-                        ref = gdstk.Reference(cell, origin=(x, y))
-
-                        top.add(ref)
-
-                        cell_count += 1
-
-                    x += advance_x
+                    if ch == " ":
+                        # emit pending before advancing through space
+                        emit_pending()
+                        # advance for the space itself
+                        x += advance_x
+                    else:
+                        # accumulate non-space into pending run
+                        pending += ch
+                        digit_count += 1
 
     return top
 
@@ -242,12 +321,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pixel-size", type=float, default=1.0, help="Size of one font pixel")
     p.add_argument("--layer", type=int, default=1, help="GDS layer for glyph polygons")
     p.add_argument("--datatype", type=int, default=0, help="GDS datatype for glyph polygons")
-    p.add_argument("--line-advance", type=float, default=None, help="Vertical advance per newline (defaults to glyph height)")
+    # Always advance by one font height; no --line-advance parameter
     p.add_argument("--rows", type=int, default=None, help="Maximum number of rows (lines) to process")
 
     p.add_argument("--top-cell", default="TEXT", help="Name of the top-level cell")
     p.add_argument("--unit", type=float, default=1e-6, help="Library unit (e.g., micron)")
     p.add_argument("--precision", type=float, default=1e-9, help="Library precision")
+    p.add_argument("--matchlen", type=int, default=1, help="Length of multiglyph strings to use (default 1 for single glyphs)")
 
     return p.parse_args()
 
@@ -272,8 +352,8 @@ def main() -> None:
         top_cell_name=args.top_cell,
         advance_x=adv_x,
         advance_y=adv_y,
-        newline_advance=args.line_advance,
         rows_limit=args.rows,
+        matchlen=args.matchlen,
     )
 
     lib.write_gds(args.out)
