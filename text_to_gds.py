@@ -310,36 +310,52 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _stream_chunk_from_open_file(
+def _stream_rows_to_writer(
     fin,
-    lib: gdstk.Library,
+    writer: gdstk.GdsWriter,
     glyph_cells: Dict[str, gdstk.Cell],
     advance_x: float,
     advance_y: float,
     rows_limit: Optional[int],
     progress_every: int,
     starting_row: int = 0,
-) -> Tuple[gdstk.Cell, int, bool]:
-    """Stream from an already-open text file into a new top cell.
+    name_prefix: str = "ROW",
+) -> Tuple[int, bool]:
+    """Stream text from an open file handle and write one cell per row.
 
-    Returns (top_cell, rows_processed, eof_reached).
+    Returns (rows_processed, eof_reached).
+
+    Each row is emitted as a standalone cell and written immediately with
+    GdsWriter to avoid accumulating geometry in memory.
     """
-    top = lib.new_cell("TOP_CELL")
-
     x = 0.0
     y = -starting_row * advance_y
     row = 0
     cell_count = 0
     digit_count = 0
 
+    # Create the first row cell
+    current_cell: Optional[gdstk.Cell] = gdstk.Cell(f"{name_prefix}_{starting_row + row:09d}")
+    row_has_content = False
+
+    def flush_current_row(nonlocal_row: int, nonlocal_cell: Optional[gdstk.Cell]):
+        if nonlocal_cell is not None:
+            # Write even empty rows to preserve layout if desired; here we only write
+            # rows that actually placed at least one glyph for compactness.
+            if row_has_content:
+                writer.write(nonlocal_cell)
+
     while True:
         ch = fin.read(1)
         if ch == "":
-            # EOF
-            return top, row, True
+            # EOF: flush any partial row that had content
+            flush_current_row(row, current_cell)
+            return row, True
         if ch == "\r":
             continue
         if ch == "\n":
+            # End of row: write and start the next
+            flush_current_row(row, current_cell)
             x = 0.0
             y -= advance_y
             row += 1
@@ -348,7 +364,11 @@ def _stream_chunk_from_open_file(
                     f"row={row + starting_row:,} cell_count={cell_count:,} digit_count={digit_count:,} defined cells={len(glyph_cells)} y-position={y:.3f}"
                 )
             if rows_limit is not None and row >= rows_limit:
-                return top, row, False
+                # Start of next row would exceed limit; stop here
+                return row, False
+            # Prepare next row cell
+            current_cell = gdstk.Cell(f"{name_prefix}_{starting_row + row:09d}")
+            row_has_content = False
         else:
             if ch == " ":
                 x += advance_x
@@ -356,7 +376,9 @@ def _stream_chunk_from_open_file(
                 cell = glyph_cells.get(ch)
                 if cell is None:
                     raise ValueError(f"Missing glyph for character: {ch!r}")
-                top.add(gdstk.Reference(cell, origin=(x, y)))
+                assert current_cell is not None
+                current_cell.add(gdstk.Reference(cell, origin=(x, y)))
+                row_has_content = True
                 cell_count += 1
                 digit_count += 1
                 x += advance_x
@@ -370,50 +392,45 @@ def main() -> None:
     part = 1
     total_rows = 0
 
-    with open(args.text, "r", encoding="utf-8", newline=None) as fin:
-        while True:
-            lib = gdstk.Library(unit=args.unit, precision=args.precision)
-            glyph_cells, (w_px, h_px), adv_x, adv_y = load_font_build_cells(
-                font_path=args.font,
-                lib=lib,
-                pixel_size=args.pixel_size,
-                layer=args.layer,
-                datatype=args.datatype,
-            )
+    # Build glyph definitions once in memory
+    glyph_lib = gdstk.Library(unit=args.unit, precision=args.precision)
+    glyph_cells, (w_px, h_px), adv_x, adv_y = load_font_build_cells(
+        font_path=args.font,
+        lib=glyph_lib,
+        pixel_size=args.pixel_size,
+        layer=args.layer,
+        datatype=args.datatype,
+    )
 
-            top, rows_done, eof = _stream_chunk_from_open_file(
-                fin=fin,
-                lib=lib,
-                glyph_cells=glyph_cells,
-                advance_x=adv_x,
-                advance_y=adv_y,
-                rows_limit=args.rows_per_file,
-                progress_every=args.progress_every,
-                starting_row=total_rows,
-            )
+    # Open a single writer to incrementally append cells to the same GDS file
+    writer = gdstk.GdsWriter(args.out, unit=args.unit, precision=args.precision)
 
+    # Write glyph cells first so later row cells can reference them
+    writer.write(*glyph_lib.cells)
 
-            if args.rows_per_file is None:
+    try:
+        with open(args.text, "r", encoding="utf-8", newline=None) as fin:
+            while True:
+                rows_done, eof = _stream_rows_to_writer(
+                    fin=fin,
+                    writer=writer,
+                    glyph_cells=glyph_cells,
+                    advance_x=adv_x,
+                    advance_y=adv_y,
+                    rows_limit=args.rows_per_file,
+                    progress_every=args.progress_every,
+                    starting_row=total_rows,
+                    name_prefix="ROW",
+                )
 
-                # if no rows per file, just write to the output file
-                out_path = args.out
+                total_rows += rows_done
+                if eof:
+                    break
+                part += 1
+    finally:
+        writer.close()
 
-            else:
-
-                # Determine output filename with part suffix
-                base, ext = os.path.splitext(args.out)
-                out_path = f"{base}_part{part:03d}{ext or '.gds'}"
-                
-            print(f"Writing GDS part {part}: {out_path}")
-            lib.write_gds(out_path)
-            print(f"Wrote GDS part {part}: {out_path}")
-
-            total_rows += rows_done
-            part += 1
-            if eof:
-                break
-
-    print(f"Done. Total rows processed: {total_rows:,}. Parts written: {part-1}.")
+    print(f"Done. Total rows processed: {total_rows:,}.")
 
 
 if __name__ == "__main__":
