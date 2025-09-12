@@ -312,7 +312,8 @@ def parse_args() -> argparse.Namespace:
 
 def _stream_rows_to_writer(
     fin,
-    writer: gdstk.GdsWriter,
+    lib: gdstk.Library,
+    top: gdstk.Cell,
     glyph_cells: Dict[str, gdstk.Cell],
     advance_x: float,
     advance_y: float,
@@ -320,12 +321,13 @@ def _stream_rows_to_writer(
     progress_every: int,
     starting_row: int = 0,
 ) -> Tuple[int, bool]:
-    """Stream text from an open file handle and write one cell per row.
+    """Stream text from an open file handle and add one cell per row to the library.
 
     Returns (rows_processed, eof_reached).
 
-    Each row is emitted as a standalone cell and written immediately with
-    GdsWriter to avoid accumulating geometry in memory.
+    Each row is emitted as its own cell inside the given library; the given top cell
+    receives a reference to the row cell. The whole library (glyphs + rows + top) can
+    be written at the end of the part.
     """
     x = 0.0
     y = -starting_row * advance_y
@@ -335,7 +337,7 @@ def _stream_rows_to_writer(
 
     # Local helper: build a cell from a glyph string placed at a given y
     def row_to_cell(glyph_str: str, y_pos: float, name: str) -> gdstk.Cell:
-        row_cell = gdstk.Cell(name)
+        row_cell = lib.new_cell(name)
 
         xx = 0.0
         for ch in glyph_str:
@@ -350,7 +352,7 @@ def _stream_rows_to_writer(
             xx += advance_x
         return row_cell
 
-    # Process rows one at a time: read line -> build cell -> write
+    # Process rows one at a time: read line -> build row cell -> reference from top
 
     for line in fin:
         # With newline=None, universal newlines translates CRLF/CR to '\n'.
@@ -363,7 +365,8 @@ def _stream_rows_to_writer(
         if per_row_digits > 0:
             cell_name = f"R{starting_row}-{row}"
             cell = row_to_cell(line, y, cell_name)
-            writer.write(cell)
+            # Reference the row cell from the top cell; origin at (0, 0) since y is baked into row cell
+            top.add(gdstk.Reference(cell))
             cell_count += per_row_digits
             digit_count += per_row_digits
 
@@ -391,29 +394,30 @@ def main() -> None:
     part = 0
     total_rows = 0
 
-    # Build glyph definitions once in memory
-    glyph_lib = gdstk.Library(unit=args.unit, precision=args.precision)
-    glyph_cells, (w_px, h_px), adv_x, adv_y = load_font_build_cells(
-        font_path=args.font,
-        lib=glyph_lib,
-        pixel_size=args.pixel_size,
-        layer=args.layer,
-        datatype=args.datatype,
-    )
-
-    # Open a single writer to incrementally append cells to the same GDS file
-    writer = gdstk.GdsWriter(args.out, unit=args.unit, precision=args.precision)
-
-    # Write glyph cells first so later row cells can reference them
-    writer.write(*glyph_lib.cells)
-
     with open(args.text, "r", encoding="utf-8", newline=None) as fin:
         eof = False
         while not eof:
             part += 1
+
+            # New library for this part
+            lib = gdstk.Library(unit=args.unit, precision=args.precision)
+            # Build glyphs inside this library so row cells can reference them
+            glyph_cells, (w_px, h_px), adv_x, adv_y = load_font_build_cells(
+                font_path=args.font,
+                lib=lib,
+                pixel_size=args.pixel_size,
+                layer=args.layer,
+                datatype=args.datatype,
+            )
+
+            # Create a top cell that will reference each row cell
+            top = lib.new_cell("TOP")
+
+            # Stream rows into row cells and add references to top
             rows_done, eof = _stream_rows_to_writer(
                 fin=fin,
-                writer=writer,
+                lib=lib,
+                top=top,
                 glyph_cells=glyph_cells,
                 advance_x=adv_x,
                 advance_y=adv_y,
@@ -422,11 +426,27 @@ def main() -> None:
                 starting_row=total_rows,
             )
 
+            # If no rows were processed and EOF, do not write an empty file
+            if rows_done == 0 and eof:
+                break
+
+            # Decide output path
+            if args.rows_per_file is None:
+                out_path = args.out
+            else:
+                base, ext = os.path.splitext(args.out)
+                out_path = f"{base}_part{part:03d}{ext or '.gds'}"
+
+            print(f"Writing GDS part {part}: {out_path}")
+            lib.write_gds(out_path)
+            print(f"Wrote GDS part {part}: {out_path}")
+
             total_rows += rows_done
+            # If not chunking, we only intended one part
+            if args.rows_per_file is None:
+                break
 
-    writer.close()
-
-    print(f"Done. Total rows processed: {total_rows:,}.")
+    print(f"Done. Total rows processed: {total_rows:,}. Parts written: {part}.")
 
 
 if __name__ == "__main__":
