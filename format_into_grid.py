@@ -104,7 +104,8 @@ def main():
     success = process_file(filename, max_rows)
     
     if success:
-        print("File reading completed successfully.")
+        # print to stderr so it doesn't get mixed up with the output file if outpout was redirected
+        print("File reading completed successfully.", file=sys.stderr, flush=True)
     else:
         sys.exit(1)
 
