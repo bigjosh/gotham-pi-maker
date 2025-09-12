@@ -39,8 +39,7 @@ import gdstk
 # Font parsing and cell build
 # ----------------------------
 
-# Prefix used for composed multi-glyph (digit string) cells
-MULTIGLYPH_PREFIX = "GLY_STR_"
+# (Multiglyph composition removed; we now emit one cell per glyph.)
 
 def _parse_glyph_key(line: str) -> str:
     """Parse a glyph identifier line.
@@ -169,45 +168,7 @@ def load_font_build_cells(
 
 # pass in a string of glyphs and it will create a new cell that has all of the glyphs referenced in it
 
-def build_multiglyph_cell(
-    s: str,
-    lib: gdstk.Library,
-    glyph_cells: Dict[str, gdstk.Cell],
-    advance_x: float,
-) -> gdstk.Cell:
-    """Build a cell that references glyph cells for a string of digits.
-
-    Raises ValueError if the string contains non-digit characters or a glyph is missing.
-    """
-    name = f"{MULTIGLYPH_PREFIX}{s}"
-    cell = lib.new_cell(name)
-
-    x = 0.0
-    for ch in s:
-        glyph = glyph_cells.get(ch)
-        if glyph is None:
-            raise ValueError(f"Missing glyph for character: {ch!r}")
-        ref = gdstk.Reference(glyph, origin=(x, 0.0))
-        cell.add(ref)
-        x += advance_x
-
-    return cell
-
-# pass in a string of glyphs and it will look for the a matching string in the dictionary and return the cell
-# if it doesn't find it, it will create a new cell and add it to the dictionary
-
-def get_multiglyph_cell(
-    s: str,
-    lib: gdstk.Library,
-    glyph_cells: Dict[str, gdstk.Cell],
-    advance_x: float,
-) -> gdstk.Cell:
-    name = f"{MULTIGLYPH_PREFIX}{s}"
-    cell = glyph_cells.get(name)
-    if cell is None:
-        cell = build_multiglyph_cell(s, lib, glyph_cells, advance_x)
-        glyph_cells[name] = cell
-    return cell
+# (Removed: build_multiglyph_cell and get_multiglyph_cell)
 
 
 # ----------------------------
@@ -222,7 +183,6 @@ def stream_text_to_cells(
     advance_x: float,
     advance_y: float,
     rows_limit: Optional[int],
-    matchlen: int,
 ) -> gdstk.Cell:
     """Create top-level cell containing references for streamed text.
 
@@ -238,48 +198,19 @@ def stream_text_to_cells(
     row = 0
     cell_count = 0
     digit_count = 0
-    if matchlen < 1:
-        raise ValueError("matchlen must be >= 1")
-
-    pending = ""  # accumulate non-space run for multiglyph placement
+    # We emit one cell per glyph.
 
     with open(text_path, "r", encoding="utf-8", newline="") as fin:
-        def emit_pending() -> None:
-            """Emit pending run: first as matchlen chunks (if >1), then remaining singles."""
-            nonlocal pending, x, cell_count
-
-            while matchlen > 1 and len(pending) >= matchlen:
-                seg = pending[:matchlen]
-                pending = pending[matchlen:]
-                cell = get_multiglyph_cell(seg, lib, glyph_cells, advance_x)
-                top.add(gdstk.Reference(cell, origin=(x, y)))
-                cell_count += 1
-                x += matchlen * advance_x
-
-            while len(pending) > 0:
-                ch2 = pending[0]
-                pending = pending[1:]
-                cell = glyph_cells.get(ch2)
-                if cell is None:
-                    raise ValueError(f"Missing glyph for character: {ch2!r}")
-                top.add(gdstk.Reference(cell, origin=(x, y)))
-                cell_count += 1
-                x += advance_x
-
         while True:
             ch = fin.read(1)
             if ch == "":
-                # EOF: flush any remaining pending run
-                emit_pending()
+                # EOF
                 break
 
             if ch == "\r":
                 continue
 
             if ch == "\n":
-                # emit pending run before newline
-                emit_pending()
-
                 # newline
                 x = 0.0
                 y -= advance_y
@@ -292,14 +223,17 @@ def stream_text_to_cells(
             else:
                 # no need to put anything in output for whitespace
                 if ch == " ":
-                    # emit pending before advancing through space
-                    emit_pending()
                     # advance for the space itself
                     x += advance_x
                 else:
-                    # accumulate non-space into pending run
-                    pending += ch
+                    # emit one cell per glyph
+                    cell = glyph_cells.get(ch)
+                    if cell is None:
+                        raise ValueError(f"Missing glyph for character: {ch!r}")
+                    top.add(gdstk.Reference(cell, origin=(x, y)))
+                    cell_count += 1
                     digit_count += 1
+                    x += advance_x
 
     return top
 
@@ -323,7 +257,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--top-cell", default="TEXT", help="Name of the top-level cell")
     p.add_argument("--unit", type=float, default=1e-6, help="Library unit (e.g., micron)")
     p.add_argument("--precision", type=float, default=1e-9, help="Library precision")
-    p.add_argument("--matchlen", type=int, default=1, help="Length of multiglyph strings to use (default 1 for single glyphs)")
 
     return p.parse_args()
 
@@ -349,7 +282,6 @@ def main() -> None:
         advance_x=adv_x,
         advance_y=adv_y,
         rows_limit=args.rows,
-        matchlen=args.matchlen,
     )
 
     lib.write_gds(args.out)
