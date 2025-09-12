@@ -11,7 +11,7 @@ Text-to-GDSII generator using a bitmap font.
 
 - Efficient generation:
   - All glyphs are prebuilt as separate GDS cells.
-  - The text file is streamed chunk-by-chunk; we only read a small buffer at a time.
+  - The text file is streamed character-by-character using Python's internal buffering.
   - We place references to glyph cells; no per-pixel polygons are duplicated.
 
 Notes and caveats:
@@ -27,7 +27,6 @@ Requires: gdstk (pip install gdstk)
 from __future__ import annotations
 
 import argparse
-import io
 import os
 import re
 from typing import Dict, Tuple, Optional, Iterable
@@ -235,75 +234,72 @@ def stream_text_to_cells(
     x = 0.0
     y = 0.0
 
-    # Read stream in buffered chunks
-    bufsize = 1 << 20  # 1 MiB
-    row=0
-    cell_count=0
-    digit_count=0
+    # Read stream character-by-character (leveraging Python's buffered I/O)
+    row = 0
+    cell_count = 0
+    digit_count = 0
     if matchlen < 1:
         raise ValueError("matchlen must be >= 1")
 
     pending = ""  # accumulate non-space run for multiglyph placement
 
     with open(text_path, "r", encoding="utf-8", newline="") as fin:
+        def emit_pending() -> None:
+            """Emit pending run: first as matchlen chunks (if >1), then remaining singles."""
+            nonlocal pending, x, cell_count
+
+            while matchlen > 1 and len(pending) >= matchlen:
+                seg = pending[:matchlen]
+                pending = pending[matchlen:]
+                cell = get_multiglyph_cell(seg, lib, glyph_cells, advance_x)
+                top.add(gdstk.Reference(cell, origin=(x, y)))
+                cell_count += 1
+                x += matchlen * advance_x
+
+            while len(pending) > 0:
+                ch2 = pending[0]
+                pending = pending[1:]
+                cell = glyph_cells.get(ch2)
+                if cell is None:
+                    raise ValueError(f"Missing glyph for character: {ch2!r}")
+                top.add(gdstk.Reference(cell, origin=(x, y)))
+                cell_count += 1
+                x += advance_x
+
         while True:
-            chunk = fin.read(bufsize)
-
-            def emit_pending() -> None:
-                """Emit pending run: first as matchlen chunks (if >1), then remaining singles."""
-                nonlocal pending, x, cell_count
-
-                while matchlen > 1 and len(pending) >= matchlen:
-                    seg = pending[:matchlen]
-                    pending = pending[matchlen:]
-                    cell = get_multiglyph_cell(seg, lib, glyph_cells, advance_x)
-                    top.add(gdstk.Reference(cell, origin=(x, y)))
-                    cell_count += 1
-                    x += matchlen * advance_x
-                
-                while len(pending) > 0:
-                    ch2 = pending[0]
-                    pending = pending[1:]
-                    cell = glyph_cells.get(ch2)
-                    if cell is None:
-                        raise ValueError(f"Missing glyph for character: {ch2!r}")
-                    top.add(gdstk.Reference(cell, origin=(x, y)))
-                    cell_count += 1
-                    x += advance_x
-
-            if not chunk:
+            ch = fin.read(1)
+            if ch == "":
                 # EOF: flush any remaining pending run
                 emit_pending()
                 break
-            
-            for ch in chunk:
-                if ch == '\r':
-                    continue
 
-                if ch == '\n':
-                    # emit pending run before newline
+            if ch == "\r":
+                continue
+
+            if ch == "\n":
+                # emit pending run before newline
+                emit_pending()
+
+                # newline
+                x = 0.0
+                y -= advance_y
+                row += 1
+                print(
+                    f"row={row:,} glyph_count={cell_count:,} digit_count={digit_count:,} defined cells={len(glyph_cells)} compression={ 1.0 - (cell_count/digit_count):.2f}"
+                )
+                if rows_limit is not None and row >= rows_limit:
+                    return top
+            else:
+                # no need to put anything in output for whitespace
+                if ch == " ":
+                    # emit pending before advancing through space
                     emit_pending()
-
-                    # newline
-                    x = 0.0
-                    y -= advance_y
-                    row += 1
-                    print(f"row={row:,} glyph_count={cell_count:,} digit_count={digit_count:,} defined cells={len(glyph_cells)} compression={ 1.0 - (cell_count/digit_count):.2f}")
-                    if rows_limit is not None and row >= rows_limit:
-                        return top
-
+                    # advance for the space itself
+                    x += advance_x
                 else:
-
-                    # no need to put anything in output for whitespace
-                    if ch == " ":
-                        # emit pending before advancing through space
-                        emit_pending()
-                        # advance for the space itself
-                        x += advance_x
-                    else:
-                        # accumulate non-space into pending run
-                        pending += ch
-                        digit_count += 1
+                    # accumulate non-space into pending run
+                    pending += ch
+                    digit_count += 1
 
     return top
 
