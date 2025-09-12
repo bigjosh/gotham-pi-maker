@@ -319,7 +319,6 @@ def _stream_rows_to_writer(
     rows_limit: Optional[int],
     progress_every: int,
     starting_row: int = 0,
-    name_prefix: str = "ROW",
 ) -> Tuple[int, bool]:
     """Stream text from an open file handle and write one cell per row.
 
@@ -334,54 +333,54 @@ def _stream_rows_to_writer(
     cell_count = 0
     digit_count = 0
 
-    # Create the first row cell
-    current_cell: Optional[gdstk.Cell] = gdstk.Cell(f"{name_prefix}_{starting_row + row:09d}")
-    row_has_content = False
+    # Local helper: build a cell from a glyph string placed at a given y
+    def row_to_cell(glyph_str: str, y_pos: float, name: str) -> gdstk.Cell:
+        row_cell = gdstk.Cell(name)
 
-    def flush_current_row(nonlocal_row: int, nonlocal_cell: Optional[gdstk.Cell]):
-        if nonlocal_cell is not None:
-            # Write even empty rows to preserve layout if desired; here we only write
-            # rows that actually placed at least one glyph for compactness.
-            if row_has_content:
-                writer.write(nonlocal_cell)
-
-    while True:
-        ch = fin.read(1)
-        if ch == "":
-            # EOF: flush any partial row that had content
-            flush_current_row(row, current_cell)
-            return row, True
-        if ch == "\r":
-            continue
-        if ch == "\n":
-            # End of row: write and start the next
-            flush_current_row(row, current_cell)
-            x = 0.0
-            y -= advance_y
-            row += 1
-            if progress_every and (row % progress_every == 0):
-                print(
-                    f"row={row + starting_row:,} cell_count={cell_count:,} digit_count={digit_count:,} defined cells={len(glyph_cells)} y-position={y:.3f}"
-                )
-            if rows_limit is not None and row >= rows_limit:
-                # Start of next row would exceed limit; stop here
-                return row, False
-            # Prepare next row cell
-            current_cell = gdstk.Cell(f"{name_prefix}_{starting_row + row:09d}")
-            row_has_content = False
-        else:
+        xx = 0.0
+        for ch in glyph_str:
             if ch == " ":
-                x += advance_x
-            else:
-                cell = glyph_cells.get(ch)
-                if cell is None:
-                    raise ValueError(f"Missing glyph for character: {ch!r}")
-                assert current_cell is not None
-                current_cell.add(gdstk.Reference(cell, origin=(x, y)))
-                row_has_content = True
-                cell_count += 1
-                digit_count += 1
-                x += advance_x
+                xx += advance_x
+                continue
+            gcell = glyph_cells.get(ch)
+            if gcell is None:
+                raise ValueError(f"Missing glyph in font for character: {ch!r}")
+                
+            row_cell.add(gdstk.Reference(gcell, origin=(xx, y_pos)))
+            xx += advance_x
+        return row_cell
+
+    # Process rows one at a time: read line -> build cell -> write
+
+    for line in fin:
+        # With newline=None, universal newlines translates CRLF/CR to '\n'.
+        # Trim the trailing newline; keep any other content intact.
+        if line.endswith("\n"):
+            line = line[:-1]
+
+        # Decide if row has any glyphs (non-space)
+        per_row_digits = sum(1 for ch in line if ch != " ")
+        if per_row_digits > 0:
+            cell_name = f"R{starting_row}-{row}"
+            cell = row_to_cell(line, y, cell_name)
+            writer.write(cell)
+            cell_count += per_row_digits
+            digit_count += per_row_digits
+
+        # Advance to next row
+        y -= advance_y
+        row += 1
+
+        # Progress reporting and optional row limit
+        if progress_every and (row % progress_every == 0):
+            print(
+                f"row={row + starting_row:,} cell_count={cell_count:,} digit_count={digit_count:,} defined cells={len(glyph_cells)} y-position={y:.3f}"
+            )
+        if rows_limit is not None and row >= rows_limit:
+            return row, False
+
+    # EOF reached naturally
+    return row, True
 
     # Unreachable
 
@@ -389,7 +388,7 @@ def _stream_rows_to_writer(
 def main() -> None:
     args = parse_args()
 
-    part = 1
+    part = 0
     total_rows = 0
 
     # Build glyph definitions once in memory
@@ -408,27 +407,24 @@ def main() -> None:
     # Write glyph cells first so later row cells can reference them
     writer.write(*glyph_lib.cells)
 
-    try:
-        with open(args.text, "r", encoding="utf-8", newline=None) as fin:
-            while True:
-                rows_done, eof = _stream_rows_to_writer(
-                    fin=fin,
-                    writer=writer,
-                    glyph_cells=glyph_cells,
-                    advance_x=adv_x,
-                    advance_y=adv_y,
-                    rows_limit=args.rows_per_file,
-                    progress_every=args.progress_every,
-                    starting_row=total_rows,
-                    name_prefix="ROW",
-                )
+    with open(args.text, "r", encoding="utf-8", newline=None) as fin:
+        eof = False
+        while not eof:
+            part += 1
+            rows_done, eof = _stream_rows_to_writer(
+                fin=fin,
+                writer=writer,
+                glyph_cells=glyph_cells,
+                advance_x=adv_x,
+                advance_y=adv_y,
+                rows_limit=args.rows_per_file,
+                progress_every=args.progress_every,
+                starting_row=total_rows,
+            )
 
-                total_rows += rows_done
-                if eof:
-                    break
-                part += 1
-    finally:
-        writer.close()
+            total_rows += rows_done
+
+    writer.close()
 
     print(f"Done. Total rows processed: {total_rows:,}.")
 
