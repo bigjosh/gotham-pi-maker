@@ -203,7 +203,6 @@ def stream_text_to_cells(
     text_path: str,
     lib: gdstk.Library,
     glyph_cells: Dict[str, gdstk.Cell],
-    top_cell_name: str,
     advance_x: float,
     advance_y: float,
     rows_limit: Optional[int],
@@ -213,7 +212,10 @@ def stream_text_to_cells(
     If an unsupported character is encountered (missing in glyph_cells),
     a ValueError is raised.
     """
-    top = lib.new_cell(top_cell_name)
+
+    # Create a new cell for the top-level cell. All other cells inside of this.
+    # There does not seem to be a typical name for this, so we will go with TOP_CELL
+    top = lib.new_cell("TOP_CELL")
 
     x = 0.0
     y = 0.0
@@ -224,23 +226,27 @@ def stream_text_to_cells(
     digit_count = 0
     # We emit one cell per glyph.
 
-    with open(text_path, "r", encoding="utf-8", newline="") as fin:
+    with open(text_path, "r", encoding="utf-8", newline=None) as fin:
         while True:
             ch = fin.read(1)
             if ch == "":
+                print("EOF")
                 # EOF
                 break
 
             if ch == "\r":
+                # ignore CR. SHould never happen?
                 continue
 
             if ch == "\n":
                 # newline
+                # according to chaTGPT, since we opened the file with newline=None, all encodeding should be converted to `\n`
                 x = 0.0
                 y -= advance_y
                 row += 1
+
                 print(
-                    f"row={row:,} glyph_count={cell_count:,} digit_count={digit_count:,} defined cells={len(glyph_cells)} compression={ 1.0 - (cell_count/digit_count):.2f}"
+                    f"row={row:,} glyph_count={cell_count:,} digit_count={digit_count:,} defined cells={len(glyph_cells)}"
                 )
                 if rows_limit is not None and row >= rows_limit:
                     return top
@@ -273,12 +279,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out", required=True, help="Output GDSII file path (.gds)")
 
     p.add_argument("--pixel-size", type=float, default=1.0, help="Size of one font pixel")
+    # note that this uses the units specified below
+
     p.add_argument("--layer", type=int, default=1, help="GDS layer for glyph polygons")
     p.add_argument("--datatype", type=int, default=0, help="GDS datatype for glyph polygons")
     # Always advance by one font height; no --line-advance parameter
     p.add_argument("--rows", type=int, default=None, help="Maximum number of rows (lines) to process")
 
-    p.add_argument("--top-cell", default="TEXT", help="Name of the top-level cell")
     p.add_argument("--unit", type=float, default=1e-6, help="Library unit (e.g., micron)")
     p.add_argument("--precision", type=float, default=1e-9, help="Library precision")
 
@@ -302,15 +309,14 @@ def main() -> None:
         text_path=args.text,
         lib=lib,
         glyph_cells=glyph_cells,
-        top_cell_name=args.top_cell,
         advance_x=adv_x,
         advance_y=adv_y,
         rows_limit=args.rows,
     )
 
+    print(f"Wrinting GDS: {args.out}")
     lib.write_gds(args.out)
     print(f"Wrote GDS: {args.out}")
-
 
 if __name__ == "__main__":
     main()
