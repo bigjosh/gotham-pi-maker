@@ -69,6 +69,9 @@ XXX.
 ..X.
 XXX.
 ....
+# this is a special char that combines the "." and "1" in "3.1415.." into a single glyph
+# so that we can fit exactly 1 billion digits evenly. We lucked out that the first digit 
+# after the Decimal point is "1", which is the only skinny glyph. Thanks, God!
 `P`
 ..X.
 ..X.
