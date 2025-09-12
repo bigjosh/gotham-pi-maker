@@ -73,6 +73,28 @@ def _parse_glyph_key(line: str) -> str:
 
     raise ValueError(f"Unrecognized glyph key format: {s}")
 
+def cell_name_from_index(index: int) -> str:
+    """Return a monotonically assigned cell name for the given index.
+
+    The means that the first assigned names will be the shortest, so try to assign common names first
+
+    Must be a valid GDS cellname, so see...
+    https://chatgpt.com/c/68c438ff-a030-8324-b033-5ae43226e658
+
+    Sequence is Excel-like using uppercase letters only:
+    0 -> "A", 1 -> "B", ..., 25 -> "Z", 26 -> "AA", 27 -> "AB", ...
+
+    This guarantees names never start with a digit and remain compact.
+    """
+    if index < 0:
+        raise ValueError(f"cell_name_from_index expects non-negative index, got: {index}")
+    name_chars = []
+    n = index
+    while n >= 0:
+        n, rem = divmod(n, 26)
+        name_chars.append(chr(ord('A') + rem))
+        n -= 1  #  base-26 adjustment
+    return ''.join(reversed(name_chars))
 
 def load_font_build_cells(
     font_path: str,
@@ -80,7 +102,6 @@ def load_font_build_cells(
     pixel_size: float,
     layer: int,
     datatype: int,
-    cell_prefix: str = "GLY_",
 ) -> Tuple[Dict[str, gdstk.Cell], Tuple[int, int], float, float]:
     """Load font file and construct one cell per glyph.
 
@@ -111,7 +132,9 @@ def load_font_build_cells(
         advance_y = h_px * step_y
 
         # Build a single pixel cell to be referenced by all glyphs
-        pixel_cell_name = f"{cell_prefix}PIX"
+        next_cell_index = 0
+        pixel_cell_name = cell_name_from_index(next_cell_index)
+        next_cell_index += 1
         pixel_cell = lib.new_cell(pixel_cell_name)
         pixel_rect = gdstk.rectangle(
             (0.0, 0.0), (pixel_size, pixel_size), layer=layer, datatype=datatype
@@ -143,8 +166,9 @@ def load_font_build_cells(
                     )
                 rows.append(row)
 
-            # Build cell for this glyph
-            safe_name = f"{cell_prefix}{ord(ch):02X}"
+            # Build cell for this glyph using monotonic naming (A, B, ..., Z, AA, ...)
+            safe_name = cell_name_from_index(next_cell_index)
+            next_cell_index += 1
             cell = lib.new_cell(safe_name)
 
             # Create references to the single pixel cell for ON pixels
