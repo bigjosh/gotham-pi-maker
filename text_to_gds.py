@@ -367,87 +367,54 @@ def _stream_chunk_from_open_file(
 def main() -> None:
     args = parse_args()
 
-    # If rows_per_file is set, we will chunk the processing into multiple GDS files
-    if args.rows_per_file:
-        part = 1
-        total_rows = 0
-        try:
-            with open(args.text, "r", encoding="utf-8", newline=None) as fin:
-                while True:
-                    lib = gdstk.Library(unit=args.unit, precision=args.precision)
-                    glyph_cells, (w_px, h_px), adv_x, adv_y = load_font_build_cells(
-                        font_path=args.font,
-                        lib=lib,
-                        pixel_size=args.pixel_size,
-                        layer=args.layer,
-                        datatype=args.datatype,
-                    )
+    part = 1
+    total_rows = 0
 
-                    top, rows_done, eof = _stream_chunk_from_open_file(
-                        fin=fin,
-                        lib=lib,
-                        glyph_cells=glyph_cells,
-                        advance_x=adv_x,
-                        advance_y=adv_y,
-                        rows_limit=args.rows_per_file,
-                        progress_every=args.progress_every,
-                        starting_row=total_rows,
-                    )
-
-                    # If no rows were processed and EOF, stop without writing an empty file
-                    if rows_done == 0 and eof:
-                        break
-
-                    # Determine output filename with part suffix
-                    base, ext = os.path.splitext(args.out)
-                    out_path = f"{base}_part{part:03d}{ext or '.gds'}"
-                    print(f"Writing GDS part {part}: {out_path}")
-                    lib.write_gds(out_path)
-                    print(f"Wrote GDS part {part}: {out_path}")
-
-                    total_rows += rows_done
-                    part += 1
-                    if eof:
-                        break
-
-        except MemoryError:
-            print(
-                "ERROR: Memory exhausted while generating GDS. Try reducing --rows-per-file to a smaller number."
+    with open(args.text, "r", encoding="utf-8", newline=None) as fin:
+        while True:
+            lib = gdstk.Library(unit=args.unit, precision=args.precision)
+            glyph_cells, (w_px, h_px), adv_x, adv_y = load_font_build_cells(
+                font_path=args.font,
+                lib=lib,
+                pixel_size=args.pixel_size,
+                layer=args.layer,
+                datatype=args.datatype,
             )
-            raise
 
-        print(f"Done. Total rows processed: {total_rows:,}. Parts written: {part-1}.")
-
-    else:
-        # Original single-file behavior
-        lib = gdstk.Library(unit=args.unit, precision=args.precision)
-
-        glyph_cells, (w_px, h_px), adv_x, adv_y = load_font_build_cells(
-            font_path=args.font,
-            lib=lib,
-            pixel_size=args.pixel_size,
-            layer=args.layer,
-            datatype=args.datatype,
-        )
-
-        try:
-            top = stream_text_to_cells(
-                text_path=args.text,
+            top, rows_done, eof = _stream_chunk_from_open_file(
+                fin=fin,
                 lib=lib,
                 glyph_cells=glyph_cells,
                 advance_x=adv_x,
                 advance_y=adv_y,
-                rows_limit=args.rows,
+                rows_limit=args.rows_per_file,
+                progress_every=args.progress_every,
+                starting_row=total_rows,
             )
-        except MemoryError:
-            print(
-                "ERROR: Memory exhausted while generating GDS. Consider using --rows-per-file to split the output into multiple smaller files."
-            )
-            raise
 
-        print(f"Wrinting GDS: {args.out}")
-        lib.write_gds(args.out)
-        print(f"Wrote GDS: {args.out}")
+
+            if args.rows_per_file is None:
+
+                # if no rows per file, just write to the output file
+                out_path = args.out
+
+            else:
+
+                # Determine output filename with part suffix
+                base, ext = os.path.splitext(args.out)
+                out_path = f"{base}_part{part:03d}{ext or '.gds'}"
+                
+            print(f"Writing GDS part {part}: {out_path}")
+            lib.write_gds(out_path)
+            print(f"Wrote GDS part {part}: {out_path}")
+
+            total_rows += rows_done
+            part += 1
+            if eof:
+                break
+
+    print(f"Done. Total rows processed: {total_rows:,}. Parts written: {part-1}.")
+
 
 if __name__ == "__main__":
     main()
