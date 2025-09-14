@@ -212,6 +212,63 @@ def load_font_build_cells(
     return glyph_cells, (w_px, h_px), advance_x, advance_y
 
 
+# Takes a cell that is composed of References to polygons and combines all the polys into a single
+# polygon and returns that as a new cell. 
+
+# mostly written by gemini 3.5 pro, which oddly insisted on importing numpi for no reason. 
+# when pressed it admitied that this was not only unessisary but also strictly bad, but still insisted
+# on doing it. :/
+
+def merge_references_to_polygon(
+    source_cell: gdstk.Cell,
+    new_cell_name: str = None
+) -> gdstk.Cell:
+
+    """
+    Merges all adjacent polygons from references within a cell into a single polygon.
+
+    This function is ideal for converting a "pixel-based" cell, composed of many
+    references to a single pixel, into a new cell containing one unified polygon
+    representing the complete shape.
+
+ 
+    Args:
+        source_cell: The input gdstk.Cell containing the references to merge.
+        new_cell_name: Optional name for the newly created cell. If None, the
+                       source cell's name with a '_merged' suffix is used.
+
+    Returns:
+        A new gdstk.Cell containing the single merged polygon.
+    """
+
+    # If a name for the new cell isn't provided, create one automatically.
+    if new_cell_name is None:
+        new_cell_name = f"{source_cell.name}_merged"
+
+    # 1. Collect all polygons from all references within the source cell.
+    # The `ref.polygons` property is crucial here, as it returns the polygons
+    # from the referenced cell *already transformed* to their final position
+    # in the source cell's coordinate system.
+    polygons_to_merge = []
+    for ref in source_cell.references:
+        polygons_to_merge.extend(ref.polygons)
+
+    if not polygons_to_merge:
+        print("Warning: Source cell contains no references to merge.")
+        return gdstk.Cell(new_cell_name)
+
+    # 2. Perform the boolean 'or' (union) operation on the collected polygons.
+    # The result is a list of one or more polygons representing the merged shape.
+    # Since all your pixels are adjacent, this will result in a single polygon.
+    merged_polygons = gdstk.boolean(polygons_to_merge, [], 'or')
+
+    # 3. Create a new cell and add the resulting merged polygon(s) to it.
+    new_cell = gdstk.Cell(new_cell_name)
+    new_cell.add(*merged_polygons)
+
+    return new_cell
+
+
 # -------------------------------------------------------------
 # Build map of fixed-length digit strings to composed GDS cells
 # -------------------------------------------------------------
