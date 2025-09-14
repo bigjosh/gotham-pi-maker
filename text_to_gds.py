@@ -73,28 +73,53 @@ def _parse_glyph_key(line: str) -> str:
 
     raise ValueError(f"Unrecognized glyph key format: {s}")
 
-def cell_name_from_index(index: int) -> str:
-    """Return a monotonically assigned cell name for the given index.
+# --------------------------------------------------
+# Stateful GDS cell name generator
+# Sequence: A..Z, A0..AZ, B0..BZ, ..., Z0..ZZ, AA0...
+# --------------------------------------------------
 
-    The means that the first assigned names will be the shortest, so try to assign common names first
+# 0-9, A-Z
+# note that we could have probably included _ here but i dont want to risk it
+_GDS_NAME_CHARS = tuple([chr(ord('0') + i) for i in range(10)] + [chr(ord('A') + i) for i in range(26)])
 
-    Must be a valid GDS cellname, so see...
-    https://chatgpt.com/c/68c438ff-a030-8324-b033-5ae43226e658
+def next_cell_name() -> str:
+    """Return the next available GDSII-compatible cell name.
 
-    Sequence is Excel-like using uppercase letters only:
-    0 -> "A", 1 -> "B", ..., 25 -> "Z", 26 -> "AA", 27 -> "AB", ...
-
-    This guarantees names never start with a digit and remain compact.
+    Order:
+      A..Z,A0..AZ,B0..BZ,...,Z0..ZZ,A00..
     """
-    if index < 0:
-        raise ValueError(f"cell_name_from_index expects non-negative index, got: {index}")
-    name_chars = []
-    n = index
-    while n >= 0:
-        n, rem = divmod(n, 26)
-        name_chars.append(chr(ord('A') + rem))
-        n -= 1  #  base-26 adjustment
-    return ''.join(reversed(name_chars))
+
+    # https://chatgpt.com/c/68c5c529-6620-8333-bb79-d6b1c7bff4f4
+    # so ugly. how do people live like this.
+
+    if not hasattr(next_cell_name, "value"):
+        next_cell_name.value = "A"  # initialize once to "A"
+
+    def increment_gds_name(value: str) -> str:
+
+        # sorry i dont speak python
+        begining = value
+        end = ""
+
+        while len(begining)>0:
+
+            # simplest case, just increment the last digit if no overflow
+
+            last_char_of_begining = begining[-1]
+
+            if _GDS_NAME_CHARS.index(last_char_of_begining) < len(_GDS_NAME_CHARS) - 1:
+
+                return begining[:-1] + _GDS_NAME_CHARS[_GDS_NAME_CHARS.index(last_char_of_begining) + 1] + end
+
+            else:
+                begining = begining[:-1]
+                end = '0' + end
+
+        # remeber GDS names must not start with digit. 
+        return "A" + end
+
+    next_cell_name.value = increment_gds_name(next_cell_name.value)
+    return next_cell_name.value
 
 def load_font_build_cells(
     font_path: str,
@@ -132,9 +157,7 @@ def load_font_build_cells(
         advance_y = h_px * step_y
 
         # Build a single pixel cell to be referenced by all glyphs
-        next_cell_index = 0
-        pixel_cell_name = cell_name_from_index(next_cell_index)
-        next_cell_index += 1
+        pixel_cell_name = next_cell_name()
         pixel_cell = lib.new_cell(pixel_cell_name)
         pixel_rect = gdstk.rectangle(
             (0.0, 0.0), (pixel_size, pixel_size), layer=layer, datatype=datatype
@@ -166,9 +189,8 @@ def load_font_build_cells(
                     )
                 rows.append(row)
 
-            # Build cell for this glyph using monotonic naming (A, B, ..., Z, AA, ...)
-            safe_name = cell_name_from_index(next_cell_index)
-            next_cell_index += 1
+            # Build cell for this glyph using monotonic naming (A..Z, then A0..AZ, B0..BZ, ...)
+            safe_name = next_cell_name()
             cell = lib.new_cell(safe_name)
 
             # Create references to the single pixel cell for ON pixels
@@ -190,88 +212,69 @@ def load_font_build_cells(
     return glyph_cells, (w_px, h_px), advance_x, advance_y
 
 
-# pass in a string of glyphs and it will create a new cell that has all of the glyphs referenced in it
+# -------------------------------------------------------------
+# Build map of fixed-length digit strings to composed GDS cells
+# -------------------------------------------------------------
 
-# (Removed: build_multiglyph_cell and get_multiglyph_cell)
-
-
-# ----------------------------
-# Text streaming and placement
-# ----------------------------
-
-def stream_text_to_cells(
-    text_path: str,
+def build_digit_string_cells_map(
     lib: gdstk.Library,
     glyph_cells: Dict[str, gdstk.Cell],
     advance_x: float,
-    advance_y: float,
-    rows_limit: Optional[int],
-) -> gdstk.Cell:
-    """Create top-level cell containing references for streamed text.
+    *,
+    length: int = 6,
+    cell_name_prefix: str = "N",
+    progress_every: int = 100000,
+) -> Dict[str, gdstk.Cell]:
+    """Create a dictionary mapping zero-padded digit strings to GDS cells.
 
-    If an unsupported character is encountered (missing in glyph_cells),
-    a ValueError is raised.
+    Builds cells for all combinations of decimal digit strings of the given length.
+    For length=6, this is 1,000,000 cells for strings '000000'..'999999'. Each cell
+    contains references to the existing digit glyph cells positioned horizontally
+    at multiples of ``advance_x``.
+
+    Parameters:
+      - lib: Target ``gdstk.Library`` in which to create the cells.
+      - glyph_cells: Mapping of characters (must include '0'..'9') to glyph cells.
+      - advance_x: Horizontal advance between consecutive digits.
+      - length: Number of digits per string (default 6).
+      - cell_name_prefix: Deprecated; cell names are now generated via ``next_cell_name()``
+        to ensure uniqueness and GDS validity.
+      - progress_every: Print a progress message every this many cells (default 100k).
+
+    Returns:
+      Dict mapping the digit string to its composed ``gdstk.Cell``.
+
+    Notes:
+      Creating 1,000,000 cells consumes significant memory and time. Use with care.
     """
 
-    if rows_limit is None:
-        print("Processing all rows")
-    else:
-        print(f"Processing up to {rows_limit} rows")    
+    # Ensure required digit glyphs exist
+    missing = [d for d in "0123456789" if d not in glyph_cells]
+    if missing:
+        raise ValueError(f"Missing glyphs for digits: {missing}")
 
-    # Create a new cell for the top-level cell. All other cells inside of this.
-    # There does not seem to be a typical name for this, so we will go with TOP_CELL
-    top = lib.new_cell("TOP_CELL")
+    result: Dict[str, gdstk.Cell] = {}
 
-    x = 0.0
-    y = 0.0
+    max_value = 10 ** length
+    for i in range(max_value):
+        s = f"{i:0{length}d}"
+        # Use global sequence to generate a valid, unique, and short cell name
+        cell_name = next_cell_name()
+        cell = lib.new_cell(cell_name)
 
-    # Read stream character-by-character (leveraging Python's buffered I/O)
-    row = 0
-    cell_count = 0
-    digit_count = 0
-    # We emit one cell per glyph.
+        # Place digit references left-to-right
+        xx = 0.0
+        for ch in s:
+            gcell = glyph_cells[ch]
+            cell.add(gdstk.Reference(gcell, origin=(xx, 0.0)))
+            xx += advance_x
 
-    with open(text_path, "r", encoding="utf-8", newline=None) as fin:
-        while True:
-            ch = fin.read(1)
-            if ch == "":
-                print("EOF")
-                # EOF
-                break
+        result[s] = cell
 
-            if ch == "\r":
-                # ignore CR. Should never happen?
-                continue
+        if progress_every and ((i + 1) % progress_every == 0):
+            print(f"Built {i + 1:,}/{max_value:,} digit-string cells (up to {s})")
 
-            if ch == "\n":
-                # newline
-                # according to chaTGPT, since we opened the file with newline=None, all encodeding should be converted to `\n`
-                x = 0.0
-                y -= advance_y
-                row += 1
-
-                print(
-                    f"row={row:,} cell_count={cell_count:,} digit_count={digit_count:,} defined cells={len(glyph_cells)} y-position={y:.3f}"
-                )
-                if rows_limit is not None and row >= rows_limit:
-                    print(f"Reached row limit {rows_limit}, stopping.")
-                    return top
-            else:
-                # no need to put anything in output for whitespace
-                if ch == " ":
-                    # advance for the space itself
-                    x += advance_x
-                else:
-                    # emit one cell per glyph
-                    cell = glyph_cells.get(ch)
-                    if cell is None:
-                        raise ValueError(f"Missing glyph for character: {ch!r}")
-                    top.add(gdstk.Reference(cell, origin=(x, y)))
-                    cell_count += 1
-                    digit_count += 1
-                    x += advance_x
-
-    return top
+    return result
 
 
 # ----------------------------
@@ -307,6 +310,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--unit", type=float, default=1e-6, help="Library unit (e.g., micron)")
     p.add_argument("--precision", type=float, default=1e-9, help="Library precision")
 
+    p.add_argument(
+        "--prebuilt-digits-len",
+        type=int,
+        default=2,
+        dest="prebuilt_digits_len",
+        help=(
+            "If set, prebuilds all digit-string cells of this length (builds 10^N cells). "
+            "Use with care; N=6 creates 1,000,000 cells."
+        ),
+    )
+
     return p.parse_args()
 
 
@@ -317,8 +331,10 @@ def _stream_rows_to_writer(
     glyph_cells: Dict[str, gdstk.Cell],
     advance_x: float,
     advance_y: float,
+    combined_cells_map: Dict[str, gdstk.Cell],  # prebuilt digit-string cells
+    combined_string_length: int,
     rows_limit: Optional[int],
-    progress_every: int,
+    progress_every: int = 1000,
     starting_row: int = 0,
 ) -> Tuple[int, bool]:
     """Stream text from an open file handle and add one cell per row to the library.
@@ -329,27 +345,57 @@ def _stream_rows_to_writer(
     receives a reference to the row cell. The whole library (glyphs + rows + top) can
     be written at the end of the part.
     """
-    x = 0.0
+
     y = -starting_row * advance_y
     row = 0
     cell_count = 0
     digit_count = 0
 
     # Local helper: build a cell from a glyph string placed at a given y
-    def row_to_cell(glyph_str: str, y_pos: float, name: str) -> gdstk.Cell:
-        row_cell = lib.new_cell(name)
+    # If digit_cells_map is provided (fixed-length strings), greedily match runs
+    # of exactly that length to place a single reference for the run.
+    def row_to_cell(s: str) -> gdstk.Cell:
+        nonlocal cell_count, digit_count
+        row_cell = lib.new_cell(next_cell_name())
 
         xx = 0.0
-        for ch in glyph_str:
-            if ch == " ":
-                xx += advance_x
-                continue
-            gcell = glyph_cells.get(ch)
-            if gcell is None:
-                raise ValueError(f"Missing glyph in font for character: {ch!r}")
-                
-            row_cell.add(gdstk.Reference(gcell, origin=(xx, y_pos)))
-            xx += advance_x
+
+        while len(s) > 0:
+
+            # Try prebuilt fixed-length digit-string match
+            match_key = s[:combined_string_length]
+            if len(match_key) == combined_string_length and match_key in combined_cells_map:
+
+                # use the prebuilt combined cell for this run of digits
+                row_cell.add(gdstk.Reference(combined_cells_map[match_key], origin=(xx,0)))
+                cell_count += 1
+                digit_count += len(match_key)
+            
+                xx += advance_x * len(match_key)
+
+                # skip the digits we just added
+                s = s[len(match_key):]
+
+            else:    
+
+                # Fallback: single-character glyph
+                ch = s[0]
+
+                if ch == " ":
+                    xx += advance_x
+                    
+                else:
+                    gcell = glyph_cells.get(ch)
+                    if gcell is None:
+                        raise ValueError(f"Missing glyph in font for character: {ch!r}")
+                    row_cell.add(gdstk.Reference(gcell, origin=(xx, 0)))
+                    cell_count += 1
+                    digit_count += 1
+                    xx += advance_x
+
+                #skip the char we just added
+                s = s[1:]
+
         return row_cell
 
     # Process rows one at a time: read line -> build row cell -> reference from top
@@ -360,15 +406,10 @@ def _stream_rows_to_writer(
         if line.endswith("\n"):
             line = line[:-1]
 
-        # Decide if row has any glyphs (non-space)
-        per_row_digits = sum(1 for ch in line if ch != " ")
-        if per_row_digits > 0:
-            cell_name = f"R{starting_row}-{row}"
-            cell = row_to_cell(line, y, cell_name)
-            # Reference the row cell from the top cell; origin at (0, 0) since y is baked into row cell
-            top.add(gdstk.Reference(cell))
-            cell_count += per_row_digits
-            digit_count += per_row_digits
+        # convert the row to a cell. automatically checks for matching combined cells to reference. 
+        row_cell = row_to_cell(line)
+        # Reference the row cell from the top cell; origin at (0, 0) since y is baked into row cell
+        top.add(gdstk.Reference(row_cell, origin=(0, y)))
 
         # Advance to next row
         y -= advance_y
@@ -376,10 +417,12 @@ def _stream_rows_to_writer(
 
         # Progress reporting and optional row limit
         if progress_every and (row % progress_every == 0):
+            ratio = (digit_count / cell_count) if cell_count else 0.0
             print(
-                f"row={row + starting_row:,} cell_count={cell_count:,} digit_count={digit_count:,} defined cells={len(glyph_cells)} y-position={y:.3f}"
+                f"row={row + starting_row:,} cell_count={cell_count:,} digit_count={digit_count:,} compression ratio={ratio:.3f} defined cells={len(glyph_cells)} y-position={y:.3f}"
             )
         if rows_limit is not None and row >= rows_limit:
+            # we reached the limit so return so we can start a new file
             return row, False
 
     # EOF reached naturally
@@ -394,9 +437,16 @@ def main() -> None:
     part = 0
     total_rows = 0
 
+    if args.rows is not None:
+        print(f"Processing max of {args.rows} rows..")
+
+    if args.rows_per_file is not None:
+        print(f"Processing max of {args.rows_per_file} rows per file..")
+        
+
     with open(args.text, "r", encoding="utf-8", newline=None) as fin:
         eof = False
-        while not eof:
+        while not eof and (args.rows is None or total_rows < args.rows):
             part += 1
 
             # New library for this part
@@ -410,8 +460,36 @@ def main() -> None:
                 datatype=args.datatype,
             )
 
-            # Create a top cell that will reference each row cell
-            top = lib.new_cell("TOP")
+            print(
+                f"Prebuilding digit-string cells of length {args.prebuilt_digits_len} (10^{args.prebuilt_digits_len} cells)..."
+            )
+            prebuilt_combined_cells_map = build_digit_string_cells_map(
+                lib=lib,
+                glyph_cells=glyph_cells,
+                advance_x=adv_x,
+                length=args.prebuilt_digits_len,
+                progress_every=max(1, args.progress_every),
+            )
+            print(
+                f"Prebuilt {len(prebuilt_combined_cells_map):,} digit-string cells of length {args.prebuilt_digits_len}."
+            )
+
+            # Create a top cell that will reference each row cell. TOP seems to be traditional, so we add the underline to avoid
+            # collisions with our name generator.
+            top = lib.new_cell("TOP_CELL")
+
+            # helper function to find the min of a list of values, but ignore None values, or return None if all args are None
+            def _min_or_none(a,b):
+                if a is None:
+                    return b
+                if b is None:
+                    return a
+                return min(a,b)
+
+            def _sub_or_none(a, b):
+                if b is None or a is None:
+                    return None
+                return a - b
 
             # Stream rows into row cells and add references to top
             rows_done, eof = _stream_rows_to_writer(
@@ -421,14 +499,15 @@ def main() -> None:
                 glyph_cells=glyph_cells,
                 advance_x=adv_x,
                 advance_y=adv_y,
-                rows_limit=args.rows_per_file,
-                progress_every=args.progress_every,
-                starting_row=total_rows,
-            )
+                combined_cells_map=prebuilt_combined_cells_map,
+                combined_string_length=args.prebuilt_digits_len,    
+                #stop processing this file when we have done the max rows in a file, or the max rows overall
 
-            # If no rows were processed and EOF, do not write an empty file
-            if rows_done == 0 and eof:
-                break
+                rows_limit = _min_or_none( args.rows_per_file , _sub_or_none(args.rows, total_rows)  ),
+
+                progress_every=args.progress_every,
+                starting_row=total_rows,                
+            )
 
             # Decide output path
             if args.rows_per_file is None:
@@ -442,11 +521,8 @@ def main() -> None:
             print(f"Wrote GDS part {part}: {out_path}")
 
             total_rows += rows_done
-            # If not chunking, we only intended one part
-            if args.rows_per_file is None:
-                break
-
-    print(f"Done. Total rows processed: {total_rows:,}. Parts written: {part}.")
+ 
+    print(f"Done. Total rows processed: {total_rows:,}. Part files written: {part}.")
 
 
 if __name__ == "__main__":
