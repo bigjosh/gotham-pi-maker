@@ -497,6 +497,13 @@ def main() -> None:
                     return None
                 return a - b
 
+            rows_to_process = _min_or_none( args.rows_per_file , _sub_or_none(args.rows, total_rows)  )
+
+            if rows_to_process is None:
+                print("Processing all rows..")
+            else:
+                print(f"Processing {rows_to_process:,} rows..")
+
             # Stream rows into row cells and add references to top
             rows_done, eof = _stream_rows_to_writer(
                 fin=fin,
@@ -510,7 +517,7 @@ def main() -> None:
                 combined_usage_counts=prebuilt_usage_counts,
                 #stop processing this file when we have done the max rows in a file, or the max rows overall
 
-                rows_limit = _min_or_none( args.rows_per_file , _sub_or_none(args.rows, total_rows)  ),
+                rows_limit = rows_to_process,
 
                 progress_every=args.progress_every,
                 starting_row=total_rows,                
