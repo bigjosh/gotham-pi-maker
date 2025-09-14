@@ -37,4 +37,15 @@ The program has the ability to split the GDS output into multipule files, each o
 At the end of the run, it prints the top used sequneces. Here are the top 10 sequences that are 6 digits long... (remember that our formating can break out sequences, so thius does not hold for Pi in general, only our layout of it)...
 
 ```
+Prebuilt string usage: total placements=166,000,000, unique keys used=1,000,000
+  741750: 231
+  395234: 227
+  590848: 227
+  948348: 227
+  088715: 225
+  559253: 225
+  541930: 223
+  916680: 223
+  270071: 222
+  767361: 222
 ```
