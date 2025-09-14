@@ -222,7 +222,6 @@ def build_digit_string_cells_map(
     advance_x: float,
     *,
     length: int = 6,
-    cell_name_prefix: str = "N",
     progress_every: int = 100000,
 ) -> Dict[str, gdstk.Cell]:
     """Create a dictionary mapping zero-padded digit strings to GDS cells.
@@ -237,8 +236,6 @@ def build_digit_string_cells_map(
       - glyph_cells: Mapping of characters (must include '0'..'9') to glyph cells.
       - advance_x: Horizontal advance between consecutive digits.
       - length: Number of digits per string (default 6).
-      - cell_name_prefix: Deprecated; cell names are now generated via ``next_cell_name()``
-        to ensure uniqueness and GDS validity.
       - progress_every: Print a progress message every this many cells (default 100k).
 
     Returns:
@@ -333,6 +330,7 @@ def _stream_rows_to_writer(
     advance_y: float,
     combined_cells_map: Dict[str, gdstk.Cell],  # prebuilt digit-string cells
     combined_string_length: int,
+    combined_usage_counts: Dict[str, int],
     rows_limit: Optional[int],
     progress_every: int = 1000,
     starting_row: int = 0,
@@ -370,6 +368,8 @@ def _stream_rows_to_writer(
                 row_cell.add(gdstk.Reference(combined_cells_map[match_key], origin=(xx,0)))
                 cell_count += 1
                 digit_count += len(match_key)
+                # track usage count for this prebuilt string key
+                combined_usage_counts[match_key] = combined_usage_counts.get(match_key, 0) + 1
             
                 xx += advance_x * len(match_key)
 
@@ -437,6 +437,9 @@ def main() -> None:
     part = 0
     total_rows = 0
 
+    # Track how many times each prebuilt digit-string key is used across all parts
+    prebuilt_usage_counts: Dict[str, int] = {}
+
     if args.rows is not None:
         print(f"Processing max of {args.rows} rows..")
 
@@ -451,6 +454,8 @@ def main() -> None:
 
             # New library for this part
             lib = gdstk.Library(unit=args.unit, precision=args.precision)
+
+
             # Build glyphs inside this library so row cells can reference them
             glyph_cells, (w_px, h_px), adv_x, adv_y = load_font_build_cells(
                 font_path=args.font,
@@ -463,6 +468,7 @@ def main() -> None:
             print(
                 f"Prebuilding digit-string cells of length {args.prebuilt_digits_len} (10^{args.prebuilt_digits_len} cells)..."
             )
+
             prebuilt_combined_cells_map = build_digit_string_cells_map(
                 lib=lib,
                 glyph_cells=glyph_cells,
@@ -500,7 +506,8 @@ def main() -> None:
                 advance_x=adv_x,
                 advance_y=adv_y,
                 combined_cells_map=prebuilt_combined_cells_map,
-                combined_string_length=args.prebuilt_digits_len,    
+                combined_string_length=args.prebuilt_digits_len,
+                combined_usage_counts=prebuilt_usage_counts,
                 #stop processing this file when we have done the max rows in a file, or the max rows overall
 
                 rows_limit = _min_or_none( args.rows_per_file , _sub_or_none(args.rows, total_rows)  ),
@@ -523,6 +530,18 @@ def main() -> None:
             total_rows += rows_done
  
     print(f"Done. Total rows processed: {total_rows:,}. Part files written: {part}.")
+
+    # Print a brief summary of prebuilt string usage
+    if prebuilt_usage_counts:
+        total_prebuilt_placements = sum(prebuilt_usage_counts.values())
+        nonzero_keys = len(prebuilt_usage_counts)
+        print(
+            f"Prebuilt string usage: total placements={total_prebuilt_placements:,}, unique keys used={nonzero_keys:,}"
+        )
+        # Show the top 10 most-used prebuilt strings
+        top_items = sorted(prebuilt_usage_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
+        for k, v in top_items:
+            print(f"  {k}: {v:,}")
 
 
 if __name__ == "__main__":
