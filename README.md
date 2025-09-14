@@ -20,9 +20,10 @@ Code to make the billion digits of Pi mask
 
     We can then check to make sure it looks OK with KLayout.
 
-7. To run the final GDS file, we use this command which will condense every 6 digit sequence of digits into a single cell for a smaller file size... 
+7. To run the final GDS file, we use this command which will condense every 6 digit sequence of digits into a single cell for a smaller file size, and make pixels be 750nm to fit the whole thing onto a 5.25"x5.25" mask... 
     ```
-    text_to_gds.py --font .\font4x6.txt --text .\pi-billion-p-grid.txt --out .\pi-billion-p-grid.gds --prebuilt-digits-len 6 --progress-every 1000    
+    text_to_gds.py --font .\font4x6.txt --text .\pi-billion-p-grid.txt --out .\pi-billion-p-grid.gds --prebuilt-digits-len 6 --progress-every 1000
+    text_to_gds.py --font .\font4x6.txt --text .\pi-billion-p-grid.txt --out .\pi-billion-p-grid.gds --rows 1500 --prebuilt-digits-len 6 --progress-every 100 --pixel-size 750 --unit 1e-9
     ```
 
 ## Notes
@@ -32,3 +33,8 @@ Cellnames are compacted base36 to save space.
 Every row is made into a cell that is composed of the digits in that row. Strings of digits less than the specified prebuilkt digits len size are included as refs.
 
 The program has the ability to split the GDS output into multipule files, each one will be a horizontal stripe of the specified row hight - which apparently is not helpful on the DWL 66+ LaserWriter.
+
+At the end of the run, it prints the top used sequneces. Here are the top 10 sequences that are 6 digits long... (remember that our formating can break out sequences, so thius does not hold for Pi in general, only our layout of it)...
+
+```
+```
