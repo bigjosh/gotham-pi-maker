@@ -546,9 +546,15 @@ def main() -> None:
             f"Prebuilt string usage: total placements={total_prebuilt_placements:,}, unique keys used={nonzero_keys:,}"
         )
         # Show the top 10 most-used prebuilt strings
+        print("Top 10 most used prebuilt strings:")
         top_items = sorted(prebuilt_usage_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
-        for k, v in top_items:
-            print(f"  {k}: {v:,}")
+        for idx, (k, v) in enumerate(top_items, 1):
+            print(f"  {idx:>2}. {k}: {v:,}")
+
+        print("Top 10 least used prebuilt strings:")
+        bottom_items = sorted(prebuilt_usage_counts.items(), key=lambda kv: (kv[1], kv[0]))[:10]
+        for idx, (k, v) in enumerate(bottom_items, 1):
+            print(f"  {idx:>2}. {k}: {v:,}")  
 
 
 if __name__ == "__main__":
