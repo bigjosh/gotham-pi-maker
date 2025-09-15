@@ -159,7 +159,7 @@ def load_font_build_cells(
         # Build a single pixel cell to be referenced by all glyphs
         pixel_cell_name = next_cell_name()
 
-        print( f"building cell {pixel_cell_name} for pixel")
+        # print( f"building cell {pixel_cell_name} for pixel")
 
         pixel_cell = lib.new_cell(pixel_cell_name)
         pixel_rect = gdstk.rectangle(
@@ -196,7 +196,7 @@ def load_font_build_cells(
             safe_name = next_cell_name()
             cell = lib.new_cell(safe_name)
 
-            print( f"building cell {safe_name} for glyph {ch}") 
+            # print( f"building cell {safe_name} for glyph {ch}") 
             # Create references to the single pixel cell for ON pixels
             refs = []
             for y in range(h_px):
@@ -227,7 +227,7 @@ def load_font_build_cells(
 
 # you must supply the new cell name or will get an exception
 
-def merge_references_to_polygon(
+def old_merge_references_to_polygon(
     source_cell: gdstk.Cell,
     new_cell_name: str = None
 ) -> gdstk.Cell:
@@ -242,36 +242,13 @@ def merge_references_to_polygon(
     Returns:
         A new gdstk.Cell containing the single merged polygon.
     """
-    # Collect polygons only from immediate references, transforming by the reference
-    # transformation (x_reflection, magnification, rotation, and origin translation).
-    polygons_to_merge = []
-    for ref in source_cell.references:
-        # Some refs may not have all attributes depending on gdstk version; guard access
-        rot = getattr(ref, "rotation", None)
-        mag = getattr(ref, "magnification", None)
-        xref = getattr(ref, "x_reflection", False)
-        origin = getattr(ref, "origin", (0.0, 0.0))
 
-        # Pull polygons from the referenced cell and transform them
-        for poly in ref.cell.polygons:
-            q = poly.copy()
-            # Apply reflection across X if requested
-            if xref:
-                q.scale(1.0, -1.0, (0.0, 0.0))
-            # Apply magnification if present
-            if mag is not None and mag != 1.0:
-                q.scale(mag, (0.0, 0.0))
-            # Apply rotation if present
-            if rot is not None and rot != 0.0:
-                q.rotate(rot, (0.0, 0.0))
-            # Finally translate to reference origin
-            ox, oy = origin
-            q.translate(ox, oy)
-            polygons_to_merge.append(q)
 
-    if not polygons_to_merge:
-        print("Warning: Source cell contains no references to merge.")
-        return gdstk.Cell(new_cell_name)
+    flattened_source_cell = source_cell.copy().flatten()
+
+    # Pull polygons from the referenced cell and transform them
+    for poly in flattened_source_cell.polygons:
+        polygons_to_merge.append(poly)
 
     # Boolean union of all polygons
     merged_polygons = gdstk.boolean(polygons_to_merge, [], 'or')
@@ -281,17 +258,38 @@ def merge_references_to_polygon(
     new_cell.add(*merged_polygons)
     return new_cell
 
+# gemino 3.5 pro wrote this
+
+def merge_polygons_in_cell(source_cell: gdstk.Cell, new_cell_name: str, precision: float) -> gdstk.Cell:
+    """
+    Merge all geometry in a cell into polygons by flattening references first,
+    then performing a boolean OR. Returns a new cell with the merged polygons.
+    """
+    # Flatten the cell (including its references) into raw polygons using a temp cell
+    tmp = gdstk.Cell("__TMP_FLATTEN__")
+    tmp.add(gdstk.Reference(source_cell))
+    tmp.flatten()
+
+    merged_cell = gdstk.Cell(new_cell_name)
+    if not tmp.polygons:
+        return merged_cell
+
+    merged_polygons = gdstk.boolean(list(tmp.polygons), [], "or", precision=precision)
+    merged_cell.add(*merged_polygons)
+    return merged_cell
+
 
 # takes a Dict[str, gdstk.Cell] and returns a new Dict[str, gdstk.Cell] where each cell is a merged polygon
 
 def merge_references_to_polygon_dict(
     source_cells: Dict[str, gdstk.Cell],
+    precision: float,
 ) -> Dict[str, gdstk.Cell]:
     # Auto-name each merged cell uniquely if no name provided
     merged: Dict[str, gdstk.Cell] = {}
     for k, v in source_cells.items():
         name = next_cell_name()
-        merged[k] = merge_references_to_polygon(v, name)
+        merged[k] = merge_polygons_in_cell(v, name, precision)
     return merged
 
 
@@ -341,7 +339,7 @@ def build_digit_string_cells_map(
         # Use global sequence to generate a valid, unique, and short cell name
         cell_name = next_cell_name()
 
-        print( f"building cell {cell_name} for digit string {s}")
+        # print( f"building cell {cell_name} for digit string {s}")
         cell = lib.new_cell(cell_name)
 
         # Place digit references left-to-right
@@ -526,6 +524,38 @@ def _stream_rows_to_writer(
 
     # Unreachable
 
+# create a diagnostic gds file from a dict of gdstk.Cells
+
+def gds_dump_of_dict(d: Dict[str, gdstk.Cell], unit: float, precision: float, advance_x: float) -> None:
+
+    # Build a diagnostic library where each input cell is flattened into a concrete polygon-only cell.
+    lib = gdstk.Library(unit=unit, precision=precision)
+
+    flattened_cells: Dict[str, gdstk.Cell] = {}
+    for key, src in d.items():
+        # Create a unique name for the flattened clone
+        flat_name = f"DUMP_{key}"
+        # Some keys may be non-GDS-safe; fallback to generator if needed
+        if not flat_name[0].isalpha():
+            flat_name = next_cell_name()
+
+        tmp = gdstk.Cell(flat_name)
+        tmp.add(gdstk.Reference(src))
+        tmp.flatten()
+        flattened_cells[key] = tmp
+        lib.add(tmp)
+
+    top_cell = gdstk.Cell("TOP_CELL")
+    x = 0.0
+    for key in flattened_cells:
+        v = flattened_cells[key]
+        top_cell.add(gdstk.Reference(v, origin=(x, 0.0)))
+        x += advance_x
+
+    lib.add(top_cell)
+    lib.write_gds("gds_dump_of_dict.gds")
+    print("Wrote gds_dump_of_dict.gds")
+
 
 def main() -> None:
     args = parse_args()
@@ -566,10 +596,15 @@ def main() -> None:
             # Choose glyph set based on --merge flag
             if args.merge:
                 print("Merging glyph cells into single polygons per glyph (first-level references only)..")
-                merged_glyph_cells = merge_references_to_polygon_dict(glyph_cells)  # Auto-name each merged cell uniquely
+                merged_glyph_cells = merge_references_to_polygon_dict(glyph_cells, precision=args.precision)  # Auto-name each merged cell uniquely
+                # Ensure merged cells are present in the library so downstream references resolve
+                for mc in merged_glyph_cells.values():
+                    lib.add(mc)
                 active_glyph_cells = merged_glyph_cells
             else:
                 active_glyph_cells = glyph_cells
+
+            gds_dump_of_dict(active_glyph_cells, unit=args.unit, precision=args.precision, advance_x=adv_x)
 
             print(
                 f"Prebuilding digit-string cells of length {args.prebuilt_digits_len} (10^{args.prebuilt_digits_len} cells)..."
