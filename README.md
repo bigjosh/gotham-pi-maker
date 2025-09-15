@@ -34,7 +34,23 @@ Every row is made into a cell that is composed of the digits in that row. String
 
 The program has the ability to split the GDS output into multipule files, each one will be a horizontal stripe of the specified row hight - which apparently is not helpful on the DWL 66+ LaserWriter.
 
-At the end of the run, it prints the top used sequneces. Here are the top 10 sequences that are 6 digits long... (remember that our formating can break out sequences, so thius does not hold for Pi in general, only our layout of it)...
+## Merge
+
+You can merge all the pixel SREFs in each digit into a single polygon with the `--merge` param. Maybe some processing programs will like this better? Do remember that 
+there is no way to have a poly with a hole in it in GDS so `0`, '6', '8', and '9' have ugly bridges in them. 
+
+Pixels:
+
+<img width="2198" height="304" alt="image" src="https://github.com/user-attachments/assets/8383be11-151c-4721-aee1-9edc09529e59" />
+
+
+Merged:
+
+<img width="2200" height="301" alt="image" src="https://github.com/user-attachments/assets/090a346b-dee3-4f8f-afe2-97dc79314e8d" />
+
+## Stats 
+
+At the end of the run, it prints the top used sequneces. Here are the top 10 sequences that are 6 digits long... (remember that our formating can break out sequences, so thius does not hold for Pi in general, only our layout of it). The take away is that the distribution is pretty even, so not point trying to optimize for more common patterns. 
 
 ```
 Prebuilt string usage: total placements=166,000,000, unique keys used=1,000,000
