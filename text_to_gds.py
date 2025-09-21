@@ -397,7 +397,7 @@ def parse_args() -> argparse.Namespace:
         dest="prebuilt_digits_len",
         help=(
             "If set, prebuilds all digit-string cells of this length (builds 10^N cells). "
-            "Use with care; N=6 creates 1,000,000 cells."
+            "N=6 creates 1,000,000 cells. N=0 creates no prebuilt cells so SREFS directly to glyph cells are used."
         ),
     )
 
@@ -604,7 +604,7 @@ def main() -> None:
             else:
                 active_glyph_cells = glyph_cells
 
-            gds_dump_of_dict(active_glyph_cells, unit=args.unit, precision=args.precision, advance_x=adv_x)
+           # gds_dump_of_dict(active_glyph_cells, unit=args.unit, precision=args.precision, advance_x=adv_x)
 
             print(
                 f"Prebuilding digit-string cells of length {args.prebuilt_digits_len} (10^{args.prebuilt_digits_len} cells)..."
