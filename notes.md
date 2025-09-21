@@ -75,6 +75,19 @@ ok, so new updated digit dimensions are:
 1000 digits per block * 40 blocks per row = 40000 digits per row.
 1000 digits per block * 25 blocks high = 25000 digits per col
 
+## chunking
+
+the laserwriter processor software is chokeng on thise files. we need to break them into chunks of 40,000 digits per chunk.
+we want breaks to be on the block boundaries so we can a new chunk every two vertical blocks. this doesnt fit exactly into the 25 blocks high.
+so there will be an orphan at the end.
+
+Each block is 1000 rows high, so we will chunk every 2000 rows and then chunk boundary will be on every other block boundary.
+We should get 11 files (last one is only 1000 rows). 
+
+here is the commmand:
+```
+>text_to_gds.py --font .\font4x6.txt --text .\pi-billion-p-grid.txt --out .\pi-billion-p-grid.gdsklayout --rows-per-file 2000
+```
 
 
 

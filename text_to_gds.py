@@ -29,7 +29,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
-from typing import Dict, Tuple, Optional, Iterable
+from typing import Dict, Tuple, Optional
 
 import gdstk
 
@@ -121,12 +121,20 @@ def next_cell_name() -> str:
     next_cell_name.value = increment_gds_name(next_cell_name.value)
     return next_cell_name.value
 
+
+def make_pixel_cell(pixel_size: float):
+    pixel_cell_name = next_cell_name() 
+    pixel_cell = gdstk.Cell(pixel_cell_name)
+    pixel_rect = gdstk.rectangle(
+        (0.0, 0.0), (pixel_size, pixel_size)
+    )
+    pixel_cell.add(pixel_rect)
+    return pixel_cell
+
 def load_font_build_cells(
-    font_path: str,
-    lib: gdstk.Library,
+    font_path: str, 
     pixel_size: float,
-    layer: int,
-    datatype: int,
+    pixel_cell: gdstk.Cell,
 ) -> Tuple[Dict[str, gdstk.Cell], Tuple[int, int], float, float]:
     """Load font file and construct one cell per glyph.
 
@@ -157,15 +165,8 @@ def load_font_build_cells(
         advance_y = h_px * step_y
 
         # Build a single pixel cell to be referenced by all glyphs
-        pixel_cell_name = next_cell_name()
+        pixel_cell_name = pixel_cell.name
 
-        # print( f"building cell {pixel_cell_name} for pixel")
-
-        pixel_cell = lib.new_cell(pixel_cell_name)
-        pixel_rect = gdstk.rectangle(
-            (0.0, 0.0), (pixel_size, pixel_size), layer=layer, datatype=datatype
-        )
-        pixel_cell.add(pixel_rect)
 
         line_iter = iter(f)
         for line in line_iter:
@@ -194,7 +195,7 @@ def load_font_build_cells(
 
             # Build cell for this glyph using monotonic naming (A..Z, then A0..AZ, B0..BZ, ...)
             safe_name = next_cell_name()
-            cell = lib.new_cell(safe_name)
+            cell = gdstk.Cell(safe_name)
 
             # print( f"building cell {safe_name} for glyph {ch}") 
             # Create references to the single pixel cell for ON pixels
@@ -214,8 +215,6 @@ def load_font_build_cells(
             glyph_cells[ch] = cell
 
     return glyph_cells, (w_px, h_px), advance_x, advance_y
-
-
 
 
 # Takes a cell that is composed of References to polygons and combines all the polys into a single
@@ -280,6 +279,7 @@ def merge_polygons_in_cell(source_cell: gdstk.Cell, new_cell_name: str, precisio
 
 
 # takes a Dict[str, gdstk.Cell] and returns a new Dict[str, gdstk.Cell] where each cell is a merged polygon
+# version of the oreginal glyph which was a collection of references to the pixels.
 
 def merge_references_to_polygon_dict(
     source_cells: Dict[str, gdstk.Cell],
@@ -298,10 +298,8 @@ def merge_references_to_polygon_dict(
 # -------------------------------------------------------------
 
 def build_digit_string_cells_map(
-    lib: gdstk.Library,
     glyph_cells: Dict[str, gdstk.Cell],
     advance_x: float,
-    *,
     length: int = 6,
     progress_every: int = 100000,
 ) -> Dict[str, gdstk.Cell]:
@@ -313,7 +311,6 @@ def build_digit_string_cells_map(
     at multiples of ``advance_x``.
 
     Parameters:
-      - lib: Target ``gdstk.Library`` in which to create the cells.
       - glyph_cells: Mapping of characters (must include '0'..'9') to glyph cells.
       - advance_x: Horizontal advance between consecutive digits.
       - length: Number of digits per string (default 6).
@@ -340,7 +337,7 @@ def build_digit_string_cells_map(
         cell_name = next_cell_name()
 
         # print( f"building cell {cell_name} for digit string {s}")
-        cell = lib.new_cell(cell_name)
+        cell = gdstk.Cell(cell_name)
 
         # Place digit references left-to-right
         xx = 0.0
@@ -410,28 +407,26 @@ def parse_args() -> argparse.Namespace:
 
     return p.parse_args()
 
+# read up to rows_limit lines from the input file and write rows to the gds file
+# note that this writes each row to the gds file using a  writer so we can limit memory usage 
+# returns a tuple of (rows_processed, eof_reached)
 
 def _stream_rows_to_writer(
     fin,
-    lib: gdstk.Library,
-    top: gdstk.Cell,
-    glyph_cells: Dict[str, gdstk.Cell],
+    glyph_cells: Dict[str, gdstk.Cell],     # Assume these are floating cells and not in the lib?
     advance_x: float,
     advance_y: float,
     combined_cells_map: Dict[str, gdstk.Cell],  # prebuilt digit-string cells
     combined_string_length: int,
     combined_usage_counts: Dict[str, int],
+    writer: gdstk.GdsWriter,
     rows_limit: Optional[int],
     progress_every: int = 1000,
     starting_row: int = 0,
 ) -> Tuple[int, bool]:
-    """Stream text from an open file handle and add one cell per row to the library.
+    """Stream text from an open file and write each row immediately using GdsWriter.
 
     Returns (rows_processed, eof_reached).
-
-    Each row is emitted as its own cell inside the given library; the given top cell
-    receives a reference to the row cell. The whole library (glyphs + rows + top) can
-    be written at the end of the part.
     """
 
     y = -starting_row * advance_y
@@ -442,18 +437,24 @@ def _stream_rows_to_writer(
     # Local helper: build a cell from a glyph string placed at a given y
     # If digit_cells_map is provided (fixed-length strings), greedily match runs
     # of exactly that length to place a single reference for the run.
-    def row_to_cell(s: str) -> gdstk.Cell:
+    # the returned cell is "floating", it is not added to the library
+    def row_to_cell(row_num: int, s: str) -> gdstk.Cell:
         nonlocal cell_count, digit_count
-        row_cell = lib.new_cell(next_cell_name())
+        # make the new row cell. it is floating, not in a library. Use GDS-safe uppercase name.
+        row_cell = gdstk.Cell(f"ROW_{row_num:08}")
 
         xx = 0.0
 
         while len(s) > 0:
 
             # Try prebuilt fixed-length digit-string match
+            # note that this will fail in n time if run is 0 so we don't special case it out
 
-            match_key = s[:combined_string_length]
-            match_cell = combined_cells_map.get(match_key)
+            # Disable fixed-length matching when combined_string_length <= 0 to avoid infinite loops.
+            match_cell = None
+            if combined_string_length > 0:
+                match_key = s[:combined_string_length]
+                match_cell = combined_cells_map.get(match_key)
 
             if match_cell is not None:
 
@@ -492,6 +493,8 @@ def _stream_rows_to_writer(
 
         return row_cell
 
+
+
     # Process rows one at a time: read line -> build row cell -> reference from top
 
     for line in fin:
@@ -500,10 +503,13 @@ def _stream_rows_to_writer(
         if line.endswith("\n"):
             line = line[:-1]
 
-        # convert the row to a cell. automatically checks for matching combined cells to reference. 
-        row_cell = row_to_cell(line)
-        # Reference the row cell from the top cell; origin at (0, 0) since y is baked into row cell
-        top.add(gdstk.Reference(row_cell, origin=(0, y)))
+        # convert the row to a cell. automatically checks for matching combined cells to reference.
+        # Use the global row index for deterministic naming across parts.
+        row_cell = row_to_cell(row + starting_row, line)
+        # Immediately flush this row by writing the row cell and a small per-row
+        # top cell that references it at the correct y.
+        writer.write(row_cell)
+        del row_cell    # free up the memory since we will never Reference it again
 
         # Advance to next row
         y -= advance_y
@@ -580,29 +586,47 @@ def main() -> None:
         while not eof and (args.rows is None or total_rows < args.rows):
             part += 1
 
-            # New library for this part
-            lib = gdstk.Library(unit=args.unit, precision=args.precision)
+            # Decide output path for this part
+            if args.rows_per_file is None:
+                out_path = args.out
+            else:
+                base, ext = os.path.splitext(args.out)
+                out_path = f"{base}_part{part:03d}{ext or '.gds'}"
+            # Open GdsWriter and emit glyph + prebuilt combined cells once for this part
+            print(f"Writing GDS part {part}: {out_path}")
+            writer = gdstk.GdsWriter(out_path, unit=args.unit, precision=args.precision)
 
+            # Create pixel cell first
+            pixel_cell = make_pixel_cell(args.pixel_size)
 
             # Build glyphs inside this library so row cells can reference them
             glyph_cells, (w_px, h_px), adv_x, adv_y = load_font_build_cells(
                 font_path=args.font,
-                lib=lib,
                 pixel_size=args.pixel_size,
-                layer=args.layer,
-                datatype=args.datatype,
+                pixel_cell=pixel_cell,
             )
 
             # Choose glyph set based on --merge flag
             if args.merge:
                 print("Merging glyph cells into single polygons per glyph (first-level references only)..")
                 merged_glyph_cells = merge_references_to_polygon_dict(glyph_cells, precision=args.precision)  # Auto-name each merged cell uniquely
-                # Ensure merged cells are present in the library so downstream references resolve
-                for mc in merged_glyph_cells.values():
-                    lib.add(mc)
                 active_glyph_cells = merged_glyph_cells
             else:
+                # since we are using the pixel cell as a reference, we need to write it first
+                writer.write(pixel_cell)
                 active_glyph_cells = glyph_cells
+
+
+
+            # Ensure the pixel cell is written before any glyphs that reference it.
+            writer.write_cell(pixel_cell)
+            for gcell in active_glyph_cells.values():
+                writer.write_cell(gcell)
+            for combined_cell in prebuilt_combined_cells_map.values():
+                writer.write_cell(combined_cell)
+
+
+
 
            # gds_dump_of_dict(active_glyph_cells, unit=args.unit, precision=args.precision, advance_x=adv_x)
 
@@ -611,7 +635,6 @@ def main() -> None:
             )
 
             prebuilt_combined_cells_map = build_digit_string_cells_map(
-                lib=lib,
                 glyph_cells=active_glyph_cells,
                 advance_x=adv_x,
                 length=args.prebuilt_digits_len,
@@ -623,7 +646,7 @@ def main() -> None:
 
             # Create a top cell that will reference each row cell. TOP seems to be traditional, so we add the underline to avoid
             # collisions with our name generator.
-            top = lib.new_cell("TOP_CELL")
+            top = gdstk.Cell("TOP_CELL")
 
             # helper function to find the min of a list of values, but ignore None values, or return None if all args are None
             def _min_or_none(a,b):
@@ -638,6 +661,8 @@ def main() -> None:
                     return None
                 return a - b
 
+            # Determine how many rows to process in this part. When rows_per_file is None, we will keep
+            # a single output file open and stream all rows into it using GdsWriter.
             rows_to_process = _min_or_none( args.rows_per_file , _sub_or_none(args.rows, total_rows)  )
 
             if rows_to_process is None:
@@ -645,34 +670,30 @@ def main() -> None:
             else:
                 print(f"Processing {rows_to_process:,} rows..")
 
-            # Stream rows into row cells and add references to top
+
+
+
+
+            print("building rows...")
+
+            # Stream rows: build row cells and write them immediately via the writer
             rows_done, eof = _stream_rows_to_writer(
                 fin=fin,
-                lib=lib,
-                top=top,
+                top=top,  # not used when writer is provided
                 glyph_cells=active_glyph_cells,
                 advance_x=adv_x,
                 advance_y=adv_y,
                 combined_cells_map=prebuilt_combined_cells_map,
                 combined_string_length=args.prebuilt_digits_len,
                 combined_usage_counts=prebuilt_usage_counts,
-                #stop processing this file when we have done the max rows in a file, or the max rows overall
-
-                rows_limit = rows_to_process,
-
+                writer=writer,
+                rows_limit=rows_to_process,
                 progress_every=args.progress_every,
-                starting_row=total_rows,                
+                starting_row=total_rows,
             )
 
-            # Decide output path
-            if args.rows_per_file is None:
-                out_path = args.out
-            else:
-                base, ext = os.path.splitext(args.out)
-                out_path = f"{base}_part{part:03d}{ext or '.gds'}"
-
-            print(f"Writing GDS part {part}: {out_path}")
-            lib.write_gds(out_path)
+            # Close writer for this part
+            writer.close()
             print(f"Wrote GDS part {part}: {out_path}")
 
             total_rows += rows_done
