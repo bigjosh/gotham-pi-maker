@@ -549,7 +549,7 @@ def main() -> None:
 
             # Create pixel cell first
             pixel_cell = make_pixel_cell(args.pixel_size)
-            lib.add(pixel_cell)
+            # lib.add(pixel_cell)
 
             # Build glyphs inside this library so row cells can reference them
             glyph_cells, (w_px, h_px), adv_x, adv_y = load_font_build_cells(
@@ -564,13 +564,15 @@ def main() -> None:
                 merged_glyph_cells = merge_references_to_polygon_dict(glyph_cells, precision=args.precision)  # Auto-name each merged cell uniquely
                 active_glyph_cells = merged_glyph_cells
             else:
-                # since we are using the pixel cell as a reference in the glyphs, we need to write it first
+                # since we are using the pixel cell as a reference in the glyphs, we need to include it in the library
                 active_glyph_cells = glyph_cells
+                lib.add(pixel_cell)
 
+            # add all the individual glyph cells to the top glyph cell
             for gcell in active_glyph_cells.values():
                 lib.add(gcell)
 
-           # gds_dump_of_dict(active_glyph_cells, unit=args.unit, precision=args.precision, advance_x=adv_x)
+            # gds_dump_of_dict(active_glyph_cells, unit=args.unit, precision=args.precision, advance_x=adv_x)
 
             print(
                 f"Prebuilding digit-string cells of length {args.prebuilt_digits_len} (10^{args.prebuilt_digits_len} cells)..."
@@ -590,8 +592,8 @@ def main() -> None:
             # note this assumes we use all prebuilt cells. unused ones waste space in the file.
             # note that we still need the indivudual glyphs becuase we might have orphaned digits that do not match
             # any prebuilt cells.
-            for combined_cell in prebuilt_combined_cells_map.values():
-                lib.add(combined_cell)
+            # for combined_cell in prebuilt_combined_cells_map.values():
+                # lib.add(combined_cell)
 
             # Create a top cell that will reference each row cell. TOP seems to be traditional, so we add the underline to avoid
             # collisions with our name generator.
