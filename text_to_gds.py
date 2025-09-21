@@ -639,6 +639,7 @@ def main() -> None:
             )
 
             # Close writer for this part
+            print(f"Writing lib for part {part}..")
             lib.write_gds(out_path)
             print(f"Wrote GDS part {part}: {out_path}")
 
