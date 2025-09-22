@@ -400,7 +400,9 @@ def _stream_rows_to_writer(
     def process_row( cell: gdstk.Cell,  xx: float, y: float, s: str):
         nonlocal cell_count, digit_count
 
-        while len(s) > 0:
+        pos =0
+
+        while pos < len(s):
 
             # Try prebuilt fixed-length digit-string match
             # note that this will fail in n time if run is 0 so we don't special case it out
@@ -408,7 +410,7 @@ def _stream_rows_to_writer(
             # Disable fixed-length matching when combined_string_length <= 0 to avoid infinite loops.
             match_cell = None
             if combined_string_length > 0:
-                match_key = s[:combined_string_length]
+                match_key = s[pos:pos+combined_string_length]
                 match_cell = combined_cells_map.get(match_key)
 
             if match_cell is not None:
@@ -424,12 +426,12 @@ def _stream_rows_to_writer(
                 xx += advance_x * combined_string_length
 
                 # skip the digits we just added
-                s = s[combined_string_length:]
+                pos += combined_string_length
 
             else:    
 
                 # Fallback: single-character glyph
-                ch = s[0]
+                ch = s[pos]
 
                 if ch == " ":
                     xx += advance_x
@@ -444,7 +446,7 @@ def _stream_rows_to_writer(
                     xx += advance_x
 
                 #skip the char we just added
-                s = s[1:]
+                pos += 1
 
         return
 
