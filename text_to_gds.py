@@ -455,9 +455,11 @@ def _stream_rows_to_writer(
     for line in fin:
         # With newline=None, universal newlines translates CRLF/CR to '\n'.
         # Trim the trailing newline; keep any other content intact.
-        if line.endswith("\n"):
-            line = line[:-1]
-
+        # will also get rid of any extra spaces so that a line with only spaces will be empty
+        # and then process_row will skip it
+        
+        line = line.strip()
+        
         # for now every row starts at the lefty edge
         process_row(top, 0, y, line)
 
