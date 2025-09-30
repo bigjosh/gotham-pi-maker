@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """
+This makes a test coupon for oxide cutouts. It generates an array where x axis is oxide size and y axis is gap size.
 Create a GDS file with two layers: 'oxide-etch' and 'metal'.
 
 Cell: 'test-junction'
@@ -107,7 +108,7 @@ def make_junction_array(
     span_min_um: float = 5.0,
     span_max_um: float = 200.0,
     total_width_um: float = 9000.0,
-    total_height_um: float = 5000.0,
+    total_height_um: float = 7500.0,
     clearance_x_um: float = 200.0,
     clearance_y_um: float = 100.0,
     inner_size_um: float = 100.0,
