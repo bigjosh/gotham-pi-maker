@@ -383,12 +383,98 @@ def parse_args() -> argparse.Namespace:
         help="When set, merge each glyph's pixel references into a single polygon before rendering.",
     )
 
+    p.add_argument(
+        "--crush",
+        action="store_true",
+        help="Crush horizontal runs when processing rows (passed to process_row).",
+    )
+
     return p.parse_args()
+
+
+# here we will run though all of the glyph cells in the input cell and we will decompose them into thier polygons
+# and then we will recombine those polys into larger polygons subject to the constraint that each BOUNDARY record
+# cna only have a max of 8191 pints (each an XY) and remebering that the resulting poly must be closed so that 
+# the end connects back to the begining. 
+# To do this, we will take each glyph cell and find the leftmost bottom most point and make that be the "start"
+# and then find the right most bottom most point and make that be the "end". we will then check to see if adding the
+# current glyph to the current BOUNADARY record would exceed the maximum number of pints (keeping in mind that we also
+# need to add the line that goes from the current end back to the orginal start point). if it would we will close the current
+# BOUNADARY record by adding a point that goes back to the current begining (which we keep track of) and start a boundary
+# where the new start of the current boundary is the start of the glyph we are adding. 
+
+
+# The GDSII format has a hard limit on the number of vertices a single polygon
+# (a BOUNDARY record) can have. This is 8191.
+GDSII_MAX_POINTS = 8191
+
+def crush_cell(cell: gdstk.Cell) -> gdstk.Cell:
+    """
+    Decomposes all geometry in a cell, merges it to create larger polygons,
+    and then fractures any resulting polygons that exceed the GDSII vertex limit.
+
+    This function simplifies complex layouts (e.g., from text glyphs) by 
+    reducing the total number of polygons, which can significantly decrease 
+    file size and improve processing speed in other EDA tools.
+
+    The process is as follows:
+    1.  Flattens all polygons from the input cell, grouping them by their layer 
+        and datatype.
+    2.  For each layer, it performs a boolean "union" (`or`) operation to merge any
+        touching or overlapping polygons into single, larger polygons.
+    3.  It checks each of these new polygons against the GDSII vertex limit.
+    4.  If a polygon is over the limit, it is automatically fractured into 
+        smaller, compliant polygons.
+    5.  A new cell is returned containing the final, optimized geometry.
+
+    Args:
+        cell: The gdstk.Cell object to process.
+
+    Returns:
+        A new gdstk.Cell containing the "crushed" and optimized geometry.
+    """
+    
+    # Create a new cell to hold the resulting crushed geometry. Appending a 
+    # suffix to the name helps avoid name conflicts in the final GDSII library.
+    crushed_cell = gdstk.Cell(f"{cell.name}_crushed")
+
+    # Get all polygons, flattened from any cell references or arrays, and 
+    # group them by their layer and datatype specifications.
+    polygons = cell.get_polygons()
+
+    print(f"Crushing cell {cell.name} with {len(polygons)} polygons.")
+
+    # Perform the boolean union to merge all polygons on this layer.
+    # This is the most robust way to "recombine" polygons, as it correctly
+    # handles all edge cases like holes and complex concavities.
+    # The result is a list of the new, larger polygons.
+    merged_polygons = gdstk.boolean(polygons, [], 'or', layer=polygons[0].layer, datatype=polygons[0].datatype)
+
+    print(f"Merged {len(polygons)} polygons into {len(merged_polygons)} polygons.")
+    
+    # Now, check each merged polygon and fracture it if it's too large.
+    for poly in merged_polygons:
+        if len(poly.points) > GDSII_MAX_POINTS:
+            # This polygon exceeds the vertex limit. We use the built-in
+            # fracture() method to safely chop it into multiple compliant
+            # polygons. Using a number slightly less than the max is recommended.
+            fractured_polys = poly.fracture(max_points=GDSII_MAX_POINTS - 1, precision=1e-3)
+            print(f"Fractured polygon with {len(poly.points)} points into {len(fractured_polys)} polygons.")
+            crushed_cell.add(*fractured_polys)
+        else:
+            print(f"Added polygon with {len(poly.points)} points.")
+            # The polygon's point count is within the limit, so we can add it directly.
+            crushed_cell.add(poly)
+
+    # Return the new cell containing the optimized geometry.
+    return crushed_cell
 
 # read up to rows_limit lines from the input file and write rows to the gds file
 # note that this writes each row to the gds file using a  writer so we can limit memory usage 
 # adds a SREF to the created row to the top cell, but only uses the row name - the cell itself is deleted after it is written to the writer.
 # retruns a bool indicating if the end of the file was reached
+
+
 
 def _stream_rows_to_writer(
     fin,
@@ -402,6 +488,7 @@ def _stream_rows_to_writer(
     rows_limit: Optional[int],
     progress_every: int = 1000,
     starting_row: int = 0,
+    crush: bool = False,
 ) ->  bool:
     """Stream text from an open file and write each row immediately using GdsWriter.
 
@@ -413,16 +500,142 @@ def _stream_rows_to_writer(
     cell_count = 0
     digit_count = 0
 
+
+    def process_row_crushed( cell: gdstk.Cell, line: str):
+        nonlocal cell_count, digit_count   
+
+        xx = 0
+
+        # first we will build ourselves a dict of all the glyphs preprocessed to start at the leftmost point
+        # on the baseline and end at the rightmost point on the baseline.
+        
+
+        # this function will deconstruct the passed closed list of points into an open list where
+        # a line at y=0 between two points will be broken. 
+
+        def get_poly_points_nobaseline(points: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+
+            # first we fiond the baseline
+            baseline = None
+            for p in points:
+                if baseline is None or p[1] <baseline:
+                    baseline = p[1]
+
+            # print(f"Baseline: {baseline}")
+
+            # wrap the point around so we can take a slice to rotate
+            # points_with_wrap = points + points
+            points_with_wrap = list(points) + list(points)
+            
+            #print points_with_wrap with indexs
+            # for i in range(len(points_with_wrap)):
+                # print(f"{i}: {points_with_wrap[i]}")
+            
+            # find two consecutive points on the baseline, then delete the line between them
+            # and make the first point found be the first point in the list via roatation
+            # note that this also makes the other point be the last point on the list
+            for i in range(len(points) ):    
+                if points_with_wrap[i][1] == baseline and points_with_wrap[i + 1][1] == baseline:
+                    # print(f" found two consecutive baseline points at {points_with_wrap[i]} and {points_with_wrap[i + 1]}")
+                    return points_with_wrap[i+1:i+len(points)+1]
+
+            raise ValueError("No baseline points found")
+            
+
+        print("Preprocessing glyphs so that they are now lists of points that start and stop on the baseline...")        
+        glyph_to_broken_point_list_dict = {}
+        for ch in glyph_cells:
+            # print(f"{ch}: {len(glyph_cells[ch].polygons)} polygons")
+            points = []
+            for poly in glyph_cells[ch].polygons:
+                # print(f"  {len(poly.points)} points")
+                # print(poly.points)
+                points.extend(get_poly_points_nobaseline(poly.points))
+                # print(f"    {len(points)} points after breaking")
+                # print(points)                
+            glyph_to_broken_point_list_dict[ch] = points
+            # print(f"{ch}: {len(points)} points after breaking")
+            # print(points)
+
+        # ok now we have a nice prerpocessed list of borken polys.  
+
+        for ch in glyph_to_broken_point_list_dict:
+            print(f"{ch}: {len(glyph_to_broken_point_list_dict[ch])} points")
+         
+        # grab the layer and datatype from the first polygon  
+                     
+        layer = 1
+        datatype = 0
+
+        # we will keep building up points in are big crushed polygon in here until we are about to 
+        # exceed the GDSII points limit of 8191, and then we will create a polygon and add it to the cell
+        row_points = []
+
+        MAX_POINTS_PER_POLYGON = 8191
+
+        pos = 0
+
+        def close_polygone():
+            nonlocal row_points, cell_count
+            if not row_points:
+                return
+            if row_points[0] != row_points[-1]:
+                row_points.append(row_points[0])
+            cell.add(gdstk.Polygon(row_points, layer=layer, datatype=datatype))
+            cell_count += 1
+            row_points = []
+
+        while pos < len(line):
+            ch = line[pos]
+            if ch == " ":
+                xx += advance_x
+            else:
+                digit_count += 1
+                new_points = glyph_to_broken_point_list_dict[ch]
+
+                # move this glyph to the current x position
+                new_points = [(x + xx, y) for x, y in new_points]
+
+                # print ch, new_points len, row_points len
+                # print(f"Pos {pos} {ch}: {len(new_points)} points, {len(row_points)} points")
+
+                #input("Press any key to continue...")
+                
+                if (len(row_points) + len(new_points) + 2 ) >= MAX_POINTS_PER_POLYGON or pos == len(line) - 1:
+                    # we do not have room for these new points, or we are at the end of this line, so we need to
+                    # add a polygone to the cell
+
+                    print(f"Adding polygone with {len(row_points)} points")
+
+                    # lets close the polygone by connecting the last point to the first point
+                    close_polygone()
+
+                row_points += new_points
+                xx += advance_x
+            pos += 1
+
+        # close any remaining polygones
+        if len(row_points) > 0:
+            close_polygone()
+
+        return True
+
+
     # Local helper: process a glyph string placed at a given y and add them to the provided cell. 
     # If digit_cells_map is provided (fixed-length strings), greedily match runs
     # of exactly that length to place a single reference for the run.
     # the returned cell is "floating", it is not added to the library
 
+    # crush_flag indicates whether to crush each row into a single cell that has one boundard record for Each glyph
+    # we do this becuase the Hiedelbuerg docs say it can only handle 100K DEFs or REFs so we will give it only 
+    # 25K DEFs (one per row) but oh man those are gonna be some big defs. 
 
     # a single line is processed and the cells are added to the provided `cell`
 
-    def process_row( cell: gdstk.Cell,  xx: float, y: float, line: str):
-        nonlocal cell_count, digit_count    
+    def process_row( cell: gdstk.Cell, line: str):
+        nonlocal cell_count, digit_count   
+
+        xx =0
 
         pos =0
 
@@ -433,7 +646,7 @@ def _stream_rows_to_writer(
 
             # Disable fixed-length matching when combined_string_length <= 0 to avoid infinite loops.
             match_combined_cell_name = None
-            if combined_string_length > 0 and combined_cell_dict is not None:
+            if combined_string_length > 0 and combined_cell_dict is not None and crush is not True:
                 if pos + combined_string_length <= len(line):
                     segment = line[pos:pos+combined_string_length]
                     match_combined_cell_name = combined_cell_dict.get(segment)
@@ -441,7 +654,7 @@ def _stream_rows_to_writer(
             if match_combined_cell_name is not None:
                 # use the prebuilt combined cell for this run of digits
                 # only ref the cell name, maybe this is faster?
-                cell.add(gdstk.Reference(match_combined_cell_name, origin=(xx, y)))
+                cell.add(gdstk.Reference(match_combined_cell_name, origin=(xx, 0)))
                 cell_count += 1
                 digit_count += combined_string_length
                 xx += advance_x * combined_string_length
@@ -460,7 +673,8 @@ def _stream_rows_to_writer(
                         raise ValueError(f"Missing glyph in font for character: {ch!r}")
                     # print(f"in process_row: for cell {cell.name} adding sref to cell {gcell} for char {ch!r}")
                     # only refernce the cell name, maybe this is faster?
-                    cell.add(gdstk.Reference(gcell.name, origin=(xx, y)))
+                    # In crush mode we still use references for single chars; row-level crushing is handled elsewhere if needed.
+                    cell.add(gdstk.Reference(gcell, origin=(xx, y)))
                     cell_count += 1
                     digit_count += 1
                     xx += advance_x
@@ -468,6 +682,30 @@ def _stream_rows_to_writer(
                 #skip the char we just added
                 pos += 1
 
+        # if crush:
+        #     cell = crush_cell(cell)
+            
+        #     if cell.polygons:
+        #         # Preserve target layer/datatype from existing polygons (all should match Pixel cell's layer/datatype)
+        #         polys = list(cell.polygons)
+        #         target_layer = polys[0].layer
+        #         target_datatype = polys[0].datatype
+
+        #         merged = gdstk.boolean(
+        #             polys,
+        #             [],
+        #             "or",
+        #             layer=target_layer,
+        #             datatype=target_datatype,
+        #             precision=1e-9,
+        #             max_points=8191,
+        #         )
+
+        #         # Replace existing polygons with merged result
+        #         for p in polys:
+        #             cell.remove(p)
+        #         if merged:
+        #             cell.add(*merged)
         return
 
 
@@ -489,7 +727,12 @@ def _stream_rows_to_writer(
         row_cell = gdstk.Cell(f"ROW_{str(row).zfill(8)}")
 
         # note that we have the row built relative to y=0, we will move it down when we add it to TOP
-        process_row(row_cell, 0, 0, line)
+
+        if crush:
+            process_row_crushed(row_cell, line)
+        else:
+            process_row(row_cell, line)
+        
         writer.write(row_cell)
         top_cell.add(gdstk.Reference(row_cell.name, origin=(0, y)))
         del row_cell
@@ -592,14 +835,16 @@ def main() -> None:
                 precision=args.precision,
             )
 
-            if not args.merge:
+            if not args.merge and not args.crush:
                 # we only need  ref to the pixel if we are not merging them
                 writer.write(pixel_cell)
 
     
              # Write glyph cells to the writer since we will need them to be first in the file since they get referenced
-            for v in glyph_cells.values():
-                writer.write(v) 
+
+            if not args.crush:   
+                for v in glyph_cells.values():
+                    writer.write(v) 
 
             # gds_dump_of_dict(glyph_cells, args.unit, args.precision, adv_x)
             # return
@@ -663,6 +908,7 @@ def main() -> None:
                 glyph_cells=glyph_cells,
                 advance_x=adv_x,
                 advance_y=adv_y,
+                crush=args.crush,
                 combined_cell_dict=prebuilt_combined_cells_list,
                 combined_string_length=args.prebuilt_digits_len,
                 rows_limit=rows_to_process,
