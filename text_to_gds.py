@@ -542,7 +542,8 @@ def _stream_rows_to_writer(
             raise ValueError("No baseline points found")
             
 
-        print("Preprocessing glyphs so that they are now lists of points that start and stop on the baseline...")        
+        # we really should not do this every row, but it is so fast not worth worrying about
+        # print("Preprocessing glyphs so that they are now lists of points that start and stop on the baseline...")        
         glyph_to_broken_point_list_dict = {}
         for ch in glyph_cells:
             # print(f"{ch}: {len(glyph_cells[ch].polygons)} polygons")
@@ -559,8 +560,8 @@ def _stream_rows_to_writer(
 
         # ok now we have a nice prerpocessed list of borken polys.  
 
-        for ch in glyph_to_broken_point_list_dict:
-            print(f"{ch}: {len(glyph_to_broken_point_list_dict[ch])} points")
+        # for ch in glyph_to_broken_point_list_dict:
+        #    print(f"{ch}: {len(glyph_to_broken_point_list_dict[ch])} points")
          
         # grab the layer and datatype from the first polygon  
                      
@@ -605,7 +606,7 @@ def _stream_rows_to_writer(
                     # we do not have room for these new points, or we are at the end of this line, so we need to
                     # add a polygone to the cell
 
-                    print(f"Adding polygone with {len(row_points)} points")
+                    #print(f"Adding polygone with {len(row_points)} points")
 
                     # lets close the polygone by connecting the last point to the first point
                     close_polygone()
@@ -815,7 +816,7 @@ def main() -> None:
             # Open GdsWriter and emit glyph + prebuilt combined cells once for this part
             print(f"Writing GDS part {part}: {out_path}")
 
-            writer = gdstk.GdsWriter(outfile=out_path, unit=args.unit, precision=args.precision)
+            writer = gdstk.GdsWriter(outfile=out_path, unit=args.unit, precision=args.precision,max_points=GDSII_MAX_POINTS)
 
             pixel_cell = make_pixel_cell(
                 "PIXEL_CELL",
