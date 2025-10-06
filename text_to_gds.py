@@ -27,6 +27,7 @@ Requires: gdstk (pip install gdstk)
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 from typing import Dict, Tuple, Optional, List
@@ -264,6 +265,52 @@ def merge_polygons_in_cell(source_cell: gdstk.Cell, new_cell_name: str) -> gdstk
     merged_cell.add(*merged_polygons)
     return merged_cell
 
+
+def rotate_font_cc(
+    glyph_cells: Dict[str, gdstk.Cell],
+    font_width: int,
+    font_height: int,
+    pixel_size: float,
+) -> Dict[str, gdstk.Cell]:
+    """Rotate all glyph cells by 90 degrees counter-clockwise.
+    
+    Creates new cells that reference the original glyphs with a 90 degree rotation.
+    The rotation is adjusted so the rotated glyph origin remains at (0,0).
+    
+    Args:
+        glyph_cells: Dictionary mapping character to glyph cell
+        font_width: Font width in pixels
+        font_height: Font height in pixels  
+        pixel_size: Size of each pixel
+        
+    Returns:
+        New dictionary with rotated glyph cells
+    """
+    rotated_cells = {}
+    
+    for ch, original_cell in glyph_cells.items():
+        # Create a new cell for the rotated glyph
+        rotated_name = next_cell_name()
+        print(f"Rotating glyph {ch} from {original_cell.name} to {rotated_name}")
+        rotated_cell = gdstk.Cell(rotated_name)
+        
+        # When rotating +π/2 radians (90° CCW) around origin, a glyph extending from (0,0) to (w,h)
+        # becomes (-h, 0) to (0, w). To keep it in positive coordinates,
+        # we need to shift the origin by (h*pixel_size, 0) after rotation.
+        origin_offset = (font_height * pixel_size, 0)
+        
+        # Add a reference to the original cell with π/2 radians (90°) counter-clockwise rotation
+        ref = gdstk.Reference(
+            original_cell,
+            origin=origin_offset,
+            rotation=math.pi / 2  # π/2 radians = 90° counter-clockwise
+        )
+        rotated_cell.add(ref)
+        rotated_cells[ch] = rotated_cell
+    
+    return rotated_cells
+
+
 # -------------------------------------------------------------
 # Build map of fixed-length digit strings to composed GDS cells
 # -------------------------------------------------------------
@@ -305,12 +352,12 @@ def build_digit_string_cells_list(
         # print( f"building cell {cell_name} for digit string {s}")
         built_cell = gdstk.Cell(built_string_cell_name)
 
-        # Place digit references left-to-right
-        xx = 0.0
+        # Place digit references top-to-bottom (vertical)
+        yy = 0.0
         for ch in s:
             gcell = glyph_cells[ch]
-            built_cell.add(gdstk.Reference(gcell , origin=(xx, 0.0)))
-            xx += advance_x
+            built_cell.add(gdstk.Reference(gcell , origin=(0.0, yy)))
+            yy += advance_x
 
         if merge:
             # here we make a new cell that has all of the polygons from all of the glyphs merged 
@@ -491,11 +538,12 @@ def _stream_rows_to_writer(
     crush: bool = False,
 ) ->  bool:
     """Stream text from an open file and write each row immediately using GdsWriter.
+    Each row is placed as a vertical column, advancing horizontally for each new row.
 
     Returns (eof_reached).
     """
 
-    y = -starting_row * advance_y
+    x = starting_row * advance_y
     row = 0
     cell_count = 0
     digit_count = 0
@@ -504,7 +552,7 @@ def _stream_rows_to_writer(
     def process_row_crushed( cell: gdstk.Cell, line: str):
         nonlocal cell_count, digit_count   
 
-        xx = 0
+        yy = 0
 
         # first we will build ourselves a dict of all the glyphs preprocessed to start at the leftmost point
         # on the baseline and end at the rightmost point on the baseline.
@@ -589,13 +637,13 @@ def _stream_rows_to_writer(
         while pos < len(line):
             ch = line[pos]
             if ch == " ":
-                xx += advance_x
+                yy += advance_x
             else:
                 digit_count += 1
                 new_points = glyph_to_broken_point_list_dict[ch]
 
-                # move this glyph to the current x position
-                new_points = [(x + xx, y) for x, y in new_points]
+                # move this glyph to the current y position
+                new_points = [(x, y + yy) for x, y in new_points]
 
                 # print ch, new_points len, row_points len
                 # print(f"Pos {pos} {ch}: {len(new_points)} points, {len(row_points)} points")
@@ -612,7 +660,7 @@ def _stream_rows_to_writer(
                     close_polygone()
 
                 row_points += new_points
-                xx += advance_x
+                yy += advance_x
             pos += 1
 
         # close any remaining polygones
@@ -622,7 +670,7 @@ def _stream_rows_to_writer(
         return True
 
 
-    # Local helper: process a glyph string placed at a given y and add them to the provided cell. 
+    # Local helper: process a glyph string placed vertically starting at y=0 and add them to the provided cell. 
     # If digit_cells_map is provided (fixed-length strings), greedily match runs
     # of exactly that length to place a single reference for the run.
     # the returned cell is "floating", it is not added to the library
@@ -636,9 +684,9 @@ def _stream_rows_to_writer(
     def process_row( cell: gdstk.Cell, line: str):
         nonlocal cell_count, digit_count   
 
-        xx =0
+        yy = 0
 
-        pos =0
+        pos = 0
 
         while pos < len(line):
 
@@ -655,10 +703,10 @@ def _stream_rows_to_writer(
             if match_combined_cell_name is not None:
                 # use the prebuilt combined cell for this run of digits
                 # only ref the cell name, maybe this is faster?
-                cell.add(gdstk.Reference(match_combined_cell_name, origin=(xx, 0)))
+                cell.add(gdstk.Reference(match_combined_cell_name, origin=(0, yy)))
                 cell_count += 1
                 digit_count += combined_string_length
-                xx += advance_x * combined_string_length
+                yy += advance_x * combined_string_length
                 # skip the digits we just added
                 pos += combined_string_length
             else:
@@ -666,7 +714,7 @@ def _stream_rows_to_writer(
                 ch = line[pos]
 
                 if ch == " ":
-                    xx += advance_x
+                    yy += advance_x
                     
                 else:
                     gcell = glyph_cells.get(ch)
@@ -675,10 +723,10 @@ def _stream_rows_to_writer(
                     # print(f"in process_row: for cell {cell.name} adding sref to cell {gcell} for char {ch!r}")
                     # only refernce the cell name, maybe this is faster?
                     # In crush mode we still use references for single chars; row-level crushing is handled elsewhere if needed.
-                    cell.add(gdstk.Reference(gcell, origin=(xx, y)))
+                    cell.add(gdstk.Reference(gcell, origin=(0, yy)))
                     cell_count += 1
                     digit_count += 1
-                    xx += advance_x
+                    yy += advance_x
 
                 #skip the char we just added
                 pos += 1
@@ -722,12 +770,12 @@ def _stream_rows_to_writer(
         
         line = line.strip()
         
-        # for now every row starts at the lefty edge
+        # each row (vertical column) starts at y=0
 
         # make a new row cell with the name `ROW` 
         row_cell = gdstk.Cell(f"ROW_{str(row).zfill(8)}")
 
-        # note that we have the row built relative to y=0, we will move it down when we add it to TOP
+        # note that we have the row built relative to x=0, we will move it horizontally when we add it to TOP
 
         if crush:
             process_row_crushed(row_cell, line)
@@ -735,18 +783,18 @@ def _stream_rows_to_writer(
             process_row(row_cell, line)
         
         writer.write(row_cell)
-        top_cell.add(gdstk.Reference(row_cell.name, origin=(0, y)))
+        top_cell.add(gdstk.Reference(row_cell.name, origin=(x, 0)))
         del row_cell
 
-        # Advance to next row
-        y -= advance_y
+        # Advance to next row (horizontally)
+        x += advance_y
         row += 1
 
         # Progress reporting and optional row limit
         if progress_every and (row % progress_every == 0):
             ratio = (digit_count / cell_count) if cell_count else 0.0
             print(
-                f"row={row + starting_row:,} cell_count={cell_count:,} digit_count={digit_count:,} compression ratio={ratio:.3f} defined cells={len(glyph_cells)} y-position={y:.3f}"
+                f"row={row + starting_row:,} cell_count={cell_count:,} digit_count={digit_count:,} compression ratio={ratio:.3f} defined cells={len(glyph_cells)} x-position={x:.3f}"
             )
         if rows_limit is not None and row >= rows_limit:
             # we reached the limit so return so we can start a new file
@@ -836,13 +884,27 @@ def main() -> None:
                 precision=args.precision,
             )
 
+            # Rotate the font -90 degrees (counter-clockwise) so characters read vertically
+            print(f"Rotating font -90 degrees (counter-clockwise)...")
+            original_glyph_cells = glyph_cells
+            glyph_cells = rotate_font_cc(
+                glyph_cells=glyph_cells,
+                font_width=w_px,
+                font_height=h_px,
+                pixel_size=args.pixel_size,
+            )
+
             if not args.merge and not args.crush:
                 # we only need  ref to the pixel if we are not merging them
                 writer.write(pixel_cell)
 
     
-             # Write glyph cells to the writer since we will need them to be first in the file since they get referenced
-
+             # Write original glyph cells first (rotated cells reference these)
+            if not args.crush:   
+                for v in original_glyph_cells.values():
+                    writer.write(v)
+                    
+             # Write rotated glyph cells to the writer since we will need them to be first in the file since they get referenced
             if not args.crush:   
                 for v in glyph_cells.values():
                     writer.write(v) 
