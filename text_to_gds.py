@@ -266,13 +266,15 @@ def merge_polygons_in_cell(source_cell: gdstk.Cell, new_cell_name: str) -> gdstk
     return merged_cell
 
 
+# also merges the cells to avoid all the extra space used up by the rotations
+
 def rotate_font_cc(
     glyph_cells: Dict[str, gdstk.Cell],
     font_width: int,
     font_height: int,
     pixel_size: float,
 ) -> Dict[str, gdstk.Cell]:
-    """Rotate all glyph cells by 90 degrees counter-clockwise.
+    """Rotate all glyph cells by 90 degrees counter-clockwise and merge them.
     
     Creates new cells that reference the original glyphs with a 90 degree rotation.
     The rotation is adjusted so the rotated glyph origin remains at (0,0).
@@ -306,7 +308,11 @@ def rotate_font_cc(
             rotation=math.pi / 2  # π/2 radians = 90° counter-clockwise
         )
         rotated_cell.add(ref)
-        rotated_cells[ch] = rotated_cell
+        
+        # Merge the rotated cell into a single polygon
+        rotated_cell = merge_polygons_in_cell(rotated_cell, rotated_name)
+        
+        rotated_cells[ch] = rotated_cell    
     
     return rotated_cells
 
@@ -900,7 +906,8 @@ def main() -> None:
 
     
              # Write original glyph cells first (rotated cells reference these)
-            if not args.crush:   
+             # note that we merge the cells when rotating them so we don't need to write them if merged
+            if not args.crush and not args.merge:   
                 for v in original_glyph_cells.values():
                     writer.write(v)
                     
