@@ -779,7 +779,7 @@ def _stream_rows_to_writer(
         # each row (vertical column) starts at y=0
 
         # make a new row cell with the name `ROW` 
-        row_cell = gdstk.Cell(f"ROW_{str(row).zfill(8)}")
+        row_cell = gdstk.Cell(f"ROW_{str(starting_row + row).zfill(8)}")
 
         # note that we have the row built relative to x=0, we will move it horizontally when we add it to TOP
 
@@ -900,14 +900,14 @@ def main() -> None:
                 pixel_size=args.pixel_size,
             )
 
-            if not args.merge and not args.crush:
+            if not (args.merge or args.crush):
                 # we only need  ref to the pixel if we are not merging them
                 writer.write(pixel_cell)
 
     
              # Write original glyph cells first (rotated cells reference these)
              # note that we merge the cells when rotating them so we don't need to write them if merged
-            if not args.crush and not args.merge:   
+            if not (args.crush or args.merge):   
                 for v in original_glyph_cells.values():
                     writer.write(v)
                     
